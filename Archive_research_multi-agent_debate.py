@@ -12,7 +12,7 @@ import arxiv
 from google import genai
 from google.genai import types
 import json
-import time
+import asyncio
 import random
 import sqlite3
 import concurrent.futures
@@ -318,10 +318,11 @@ class DebateEngine:
         self.model_name = model_name
         self.debate_rounds = 2
 
-    def _call_llm(self, system: str, user_prompt: str, temperature: float = 1.0) -> str:
-        for attempt in range(3):
+    async def _call_llm(self, system: str, user_prompt: str, temperature: float = 1.0) -> str:
+        max_retries = 6
+        for attempt in range(max_retries):
             try:
-                response = self.client.models.generate_content(
+                response = await self.client.aio.models.generate_content(
                     model=self.model_name,
                     contents=user_prompt,
                     config=types.GenerateContentConfig(
@@ -331,9 +332,19 @@ class DebateEngine:
                 )
                 return response.text
             except Exception as e:
-                if attempt == 2:
+                err_str = str(e).lower()
+                is_rate_limit = ("resource" in err_str and "exhausted" in err_str) \
+                    or "429" in err_str \
+                    or "rate" in err_str \
+                    or "quota" in err_str
+                if attempt == max_retries - 1:
                     return f"[LLM Error: {e}]"
-                time.sleep(2 ** attempt)
+                if is_rate_limit:
+                    # Longer backoff for rate limits: 4s, 8s, 16s, 32s, 64s
+                    wait = (2 ** (attempt + 2)) + random.uniform(0, 2)
+                else:
+                    wait = (2 ** attempt) + random.uniform(0, 1)
+                await asyncio.sleep(wait)
 
     def _build_paper_context(self, paper: Paper, problem: str) -> str:
         return (
@@ -346,26 +357,26 @@ class DebateEngine:
             f"**Abstract:** {paper.abstract}\n"
         )
 
-    def run_debate(self, paper: Paper, problem: str) -> DebateResult:
-        """Run debate rounds then 5 independent judge verdicts."""
+    async def run_debate(self, paper: Paper, problem: str) -> DebateResult:
+        """Run debate rounds then 5 independent judge verdicts (async)."""
         context = self._build_paper_context(paper, problem)
         result = DebateResult(paper=paper)
         debate_history = ""
 
-        # ── Debate rounds ──
+        # ── Debate rounds (sequential: skeptic depends on advocate) ──
         for round_num in range(1, self.debate_rounds + 1):
             advocate_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num}: Present your argument FOR this paper's relevance."
             )
-            advocate_arg = self._call_llm(ADVOCATE_SYSTEM, advocate_prompt)
+            advocate_arg = await self._call_llm(ADVOCATE_SYSTEM, advocate_prompt)
 
             skeptic_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num} — Advocate said:\n{advocate_arg}\n\n"
                 f"Now present your counter-argument AGAINST this paper's relevance."
             )
-            skeptic_arg = self._call_llm(SKEPTIC_SYSTEM, skeptic_prompt)
+            skeptic_arg = await self._call_llm(SKEPTIC_SYSTEM, skeptic_prompt)
 
             result.rounds.append(DebateRound(
                 advocate_argument=advocate_arg,
@@ -377,7 +388,7 @@ class DebateEngine:
                 f"Skeptic: {skeptic_arg}\n"
             )
 
-        # ── 5-Judge Panel ──
+        # ── 5-Judge Panel (all judges run concurrently) ──
         judge_base_prompt = (
             f"{context}\n\n"
             f"## Full Debate Transcript\n{debate_history}\n\n"
@@ -387,7 +398,7 @@ class DebateEngine:
         seeds = [random.randint(1, 999_999) for _ in range(NUM_JUDGES)]
         temperatures = [0.5, 0.7, 0.9, 1.1, 1.3]
 
-        for i in range(NUM_JUDGES):
+        async def _run_judge(i: int) -> JudgeVerdict:
             seed = seeds[i]
             temp = temperatures[i]
             seeded_prompt = (
@@ -395,8 +406,7 @@ class DebateEngine:
                 f"(Judge run {i + 1}/{NUM_JUDGES}, seed={seed}. "
                 f"Evaluate independently.)"
             )
-            judge_raw = self._call_llm(JUDGE_SYSTEM, seeded_prompt, temperature=temp)
-
+            judge_raw = await self._call_llm(JUDGE_SYSTEM, seeded_prompt, temperature=temp)
             jv = JudgeVerdict(run=i + 1, seed=seed)
             try:
                 parsed = _parse_judge_json(judge_raw)
@@ -407,8 +417,11 @@ class DebateEngine:
             except (json.JSONDecodeError, ValueError):
                 jv.verdict = judge_raw
                 jv.relevance_score = 0
+            return jv
 
-            result.judge_verdicts.append(jv)
+        result.judge_verdicts = list(await asyncio.gather(
+            *[_run_judge(i) for i in range(NUM_JUDGES)]
+        ))
 
         # ── Aggregate scores ──
         valid_scores = [v.relevance_score for v in result.judge_verdicts if v.relevance_score > 0]
@@ -480,16 +493,15 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
             if r.paper.url:
                 st.link_button("📄 Open Paper", r.paper.url, use_container_width=True)
 
-        # Advocate & Skeptic summary (last round)
+        # Advocate & Skeptic conversation (last round)
         if r.rounds:
             last_round = r.rounds[-1]
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**🟢 Advocate (final round)**")
-                st.info(last_round.advocate_argument)
-            with c2:
-                st.markdown("**🔴 Skeptic (final round)**")
-                st.warning(last_round.skeptic_argument)
+            with st.chat_message("user", avatar="🟢"):
+                st.markdown("**Advocate (final round)**")
+                st.write(last_round.advocate_argument)
+            with st.chat_message("user", avatar="🔴"):
+                st.markdown("**Skeptic (final round)**")
+                st.write(last_round.skeptic_argument)
 
         with st.expander("Show Abstract"):
             st.write(r.paper.abstract)
@@ -500,13 +512,12 @@ def _render_debate_detail(r: DebateResult):
     """Full debate transcript and all 5 judge verdicts."""
     for i, rnd in enumerate(r.rounds, 1):
         st.markdown(f"### Round {i}")
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**🟢 Advocate**")
-            st.info(rnd.advocate_argument)
-        with c2:
-            st.markdown("**🔴 Skeptic**")
-            st.warning(rnd.skeptic_argument)
+        with st.chat_message("user", avatar="🟢"):
+            st.markdown("**Advocate**")
+            st.write(rnd.advocate_argument)
+        with st.chat_message("user", avatar="🔴"):
+            st.markdown("**Skeptic**")
+            st.write(rnd.skeptic_argument)
 
     st.markdown("### 🏛️ Judge Panel (5 independent verdicts)")
     for jv in r.judge_verdicts:
@@ -688,28 +699,28 @@ def main():
                     # Create evaluation record
                     eval_id = save_evaluation(problem_statement, model_name)
 
-                    # Step 2 — Multi-agent debate
+                    # Step 2 — Multi-agent debate (async judges, threaded papers)
                     results: list[DebateResult] = []
                     progress = st.progress(0, text="Evaluating papers...")
                     status_text = st.empty()
 
                     def evaluate_paper(paper: Paper) -> DebateResult:
-                        return engine.run_debate(paper, problem_statement)
+                        """Each thread gets its own event loop for async judge calls."""
+                        try:
+                            return asyncio.run(engine.run_debate(paper, problem_statement))
+                        except Exception as e:
+                            return DebateResult(
+                                paper=paper,
+                                combined_verdict=f"Evaluation failed: {e}",
+                                avg_score=0.0,
+                            )
 
                     completed = 0
                     with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
                         futures = {executor.submit(evaluate_paper, p): p for p in papers}
                         for future in concurrent.futures.as_completed(futures):
-                            try:
-                                result = future.result()
-                                results.append(result)
-                            except Exception as e:
-                                p = futures[future]
-                                results.append(DebateResult(
-                                    paper=p,
-                                    combined_verdict=f"Evaluation failed: {e}",
-                                    avg_score=0.0,
-                                ))
+                            result = future.result()
+                            results.append(result)
                             completed += 1
                             progress.progress(
                                 completed / len(papers),
@@ -828,13 +839,12 @@ def main():
                         rounds_db = load_paper_debates(p['id'])
                         if rounds_db:
                             for rnd in rounds_db:
-                                c1, c2 = st.columns(2)
-                                with c1:
-                                    st.markdown(f"**🟢 Advocate (R{rnd['round_num']})**")
-                                    st.info(rnd['advocate_arg'])
-                                with c2:
-                                    st.markdown(f"**🔴 Skeptic (R{rnd['round_num']})**")
-                                    st.warning(rnd['skeptic_arg'])
+                                with st.chat_message("user", avatar="🟢"):
+                                    st.markdown(f"**Advocate (R{rnd['round_num']})**")
+                                    st.write(rnd['advocate_arg'])
+                                with st.chat_message("user", avatar="🔴"):
+                                    st.markdown(f"**Skeptic (R{rnd['round_num']})**")
+                                    st.write(rnd['skeptic_arg'])
 
                         # Individual judge verdicts
                         if verdicts:
