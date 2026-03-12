@@ -27,3 +27,8 @@ Thumbs.db
 
 # Output
 arxiv_paper_matches.json
+
+# Database
+*.db
+*.db-wal
+*.db-shm
