@@ -495,9 +495,9 @@ def _judge_chips_html(verdicts: list[JudgeVerdict]) -> str:
     return " ".join(chips)
 
 
-def _render_results_list(results: list[DebateResult], show_top_badge: bool = False):
+def _render_results_list(results: list[DebateResult], show_top_badge: bool = False, key_prefix: str = "all"):
     """Render a list of paper results with advocate/skeptic + judge panel."""
-    for r in results:
+    for idx, r in enumerate(results):
         score_class = (
             "score-high" if r.avg_score >= 7
             else "score-mid" if r.avg_score >= 4
@@ -514,6 +514,11 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
             unsafe_allow_html=True,
         )
 
+        # Abstract and paper link
+        st.write(r.paper.abstract)
+        if r.paper.url:
+            st.link_button("📄 Open Paper", r.paper.url)
+
         # Judge panel scores
         if r.judge_verdicts:
             st.markdown(
@@ -529,9 +534,6 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
                 st.markdown("**Key Reasons:** " + " • ".join(r.combined_reasons))
             if r.combined_suggested_use:
                 st.markdown(f"**Suggested Use:** {r.combined_suggested_use}")
-        with col_b:
-            if r.paper.url:
-                st.link_button("📄 Open Paper", r.paper.url, use_container_width=True)
 
         # Full advocate/skeptic conversation sequence
         if r.rounds:
@@ -564,8 +566,6 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
                 + (f"**Suggested Use:** {r.combined_suggested_use}" if r.combined_suggested_use else "")
             )
 
-        with st.expander("Show Abstract"):
-            st.write(r.paper.abstract)
         st.divider()
 
 
@@ -902,6 +902,12 @@ def main():
                                     st.session_state["single_results"] = single_results
                                     st.rerun()
 
+                    # Abstract and paper link
+                    with st.expander("Show Abstract"):
+                        st.write(paper.abstract)
+                    if paper.url:
+                        st.link_button("📄 Open Paper", paper.url)
+
                     # Show result inline if evaluated
                     if already_evaluated:
                         r = single_results[paper_key]
@@ -931,13 +937,13 @@ def main():
             ])
 
             with tab_all:
-                _render_results_list(results)
+                _render_results_list(results, key_prefix="all")
 
             with tab_top:
                 top_results = [r for r in results if r.avg_score >= ms]
                 if not top_results:
                     st.info(f"No papers scored ≥ {ms}. Try lowering the threshold.")
-                _render_results_list(top_results, show_top_badge=True)
+                _render_results_list(top_results, show_top_badge=True, key_prefix="top")
 
             with tab_debate:
                 st.info("Expand any paper to see the full debate transcript and all 5 judge scores.")
@@ -1102,50 +1108,97 @@ def main():
                         score = p["Score"]
                         paper_row = next(pp for pp in filtered if pp['id'] == pid)
 
-                        st.markdown(f"### {p['Title']}")
-                        st.caption(f"👤 {p['Authors']}  |  📅 {p['Published']}  |  "
-                                   f"Eval: {p['Eval Date']}  |  Model: {p['Model']}")
+                        score_class = (
+                            "score-high" if score >= 7
+                            else "score-mid" if score >= 4
+                            else "score-low"
+                        )
+                        st.markdown(
+                            f"<div class='paper-card'>"
+                            f"<span class='{score_class}'>{score}/10</span>"
+                            f"&nbsp;&nbsp;<strong>{p['Title']}</strong><br/>"
+                            f"<small>👤 {p['Authors']} &nbsp;|&nbsp; 📅 {p['Published']}"
+                            f" &nbsp;|&nbsp; Eval: {p['Eval Date']}"
+                            f" &nbsp;|&nbsp; Model: {p['Model']}</small>"
+                            f"</div>",
+                            unsafe_allow_html=True,
+                        )
 
-                        # Problem statement
+                        # Abstract and paper link
+                        st.write(paper_row.get('abstract', ''))
+                        if paper_row.get('url'):
+                            st.link_button("📄 Open Paper", paper_row['url'])
+
+                        # Research problem
                         with st.expander("📝 Research Problem"):
                             st.write(paper_row.get('problem_text', ''))
 
-                        # Full debate + judges
-                        with st.expander("🗣️ Full Debate & Verdicts", expanded=True):
-                            rounds_db = load_paper_debates(pid)
-                            if rounds_db:
-                                for rnd in rounds_db:
-                                    with st.chat_message("user", avatar="🟢"):
-                                        st.markdown(f"**Advocate** (Round {rnd['round_num']})")
-                                        st.write(rnd['advocate_arg'])
-                                    with st.chat_message("user", avatar="🔴"):
-                                        st.markdown(f"**Skeptic** (Round {rnd['round_num']})")
-                                        st.write(rnd['skeptic_arg'])
+                        # Judge panel chips
+                        verdicts = load_paper_verdicts(pid)
+                        if verdicts:
+                            chips = []
+                            for v in verdicts:
+                                css = ("chip-high" if v['relevance_score'] >= 7
+                                       else "chip-mid" if v['relevance_score'] >= 4
+                                       else "chip-low")
+                                chips.append(
+                                    f"<span class='judge-chip {css}'>"
+                                    f"J{v['judge_run']}: {v['relevance_score']}</span>"
+                                )
+                            st.markdown(
+                                f"**Judge Panel:** {' '.join(chips)}  "
+                                f"&rarr;  **Avg: {score}**",
+                                unsafe_allow_html=True,
+                            )
 
-                            verdicts = load_paper_verdicts(pid)
-                            if verdicts:
-                                for v in verdicts:
-                                    v_icon = "🟢" if v['relevance_score'] >= 7 else "🟡" if v['relevance_score'] >= 4 else "🔴"
-                                    reasons = json.loads(v['key_reasons']) if v['key_reasons'] else []
-                                    with st.chat_message("user", avatar="⚖️"):
-                                        st.markdown(
-                                            f"**Judge {v['judge_run']}** (seed {v['seed']}) — "
-                                            f"Score: **{v_icon} {v['relevance_score']}/10**"
-                                        )
-                                        if v['verdict']:
-                                            st.write(v['verdict'])
-                                        if reasons:
-                                            st.caption("Reasons: " + " • ".join(reasons))
-                                        if v['suggested_use']:
-                                            st.caption(f"Suggested use: {v['suggested_use']}")
+                        # Combined verdict
+                        if verdicts:
+                            # Pick the verdict closest to the average score
+                            best_v = min(verdicts, key=lambda v: abs(v['relevance_score'] - score))
+                            best_reasons = json.loads(best_v['key_reasons']) if best_v['key_reasons'] else []
+                            col_a, col_b = st.columns([3, 1])
+                            with col_a:
+                                st.markdown(f"**Verdict:** {best_v['verdict']}")
+                                if best_reasons:
+                                    st.markdown("**Key Reasons:** " + " • ".join(best_reasons))
+                                if best_v['suggested_use']:
+                                    st.markdown(f"**Suggested Use:** {best_v['suggested_use']}")
 
-                                st.markdown(f"### 🏆 Final Decision: **{score}/10**")
+                        # Advocate/Skeptic debate rounds
+                        rounds_db = load_paper_debates(pid)
+                        if rounds_db:
+                            for rnd in rounds_db:
+                                with st.chat_message("user", avatar="🟢"):
+                                    st.markdown(f"**Advocate** (Round {rnd['round_num']})")
+                                    st.write(rnd['advocate_arg'])
+                                with st.chat_message("user", avatar="🔴"):
+                                    st.markdown(f"**Skeptic** (Round {rnd['round_num']})")
+                                    st.write(rnd['skeptic_arg'])
 
-                        with st.expander("Show Abstract"):
-                            st.write(paper_row.get('abstract', ''))
+                        # All 5 judge verdicts
+                        if verdicts:
+                            for v in verdicts:
+                                v_icon = "🟢" if v['relevance_score'] >= 7 else "🟡" if v['relevance_score'] >= 4 else "🔴"
+                                reasons = json.loads(v['key_reasons']) if v['key_reasons'] else []
+                                with st.chat_message("user", avatar="⚖️"):
+                                    st.markdown(
+                                        f"**Judge {v['judge_run']}** (seed {v['seed']}) — "
+                                        f"Score: **{v_icon} {v['relevance_score']}/10**"
+                                    )
+                                    if v['verdict']:
+                                        st.write(v['verdict'])
+                                    if reasons:
+                                        st.caption("Reasons: " + " • ".join(reasons))
+                                    if v['suggested_use']:
+                                        st.caption(f"Suggested use: {v['suggested_use']}")
 
-                        if paper_row.get('url'):
-                            st.link_button("📄 Open Paper", paper_row['url'])
+                            # Final decision
+                            st.markdown(
+                                f"### 🏆 Final Decision: **{score}/10**\n\n"
+                                f"**Verdict:** {best_v['verdict']}\n\n"
+                                + (f"**Key Reasons:** {' • '.join(best_reasons)}\n\n" if best_reasons else "")
+                                + (f"**Suggested Use:** {best_v['suggested_use']}" if best_v['suggested_use'] else "")
+                            )
 
                         st.divider()
                 else:

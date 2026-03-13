@@ -42,9 +42,14 @@ The debate runs **2 rounds** per paper, so the Advocate and Skeptic refine their
 - 📊 **Averaged scores** — more robust than a single judge call
 - 🟢🔴 **Advocate & Skeptic in main view** — see both arguments at a glance
 - ⚡ **Parallel evaluation** — configurable concurrency (1–10 workers)
+- � **Fetch Only mode** — browse fetched papers first, then selectively evaluate individual ones
 - 💾 **SQLite persistence** — all papers, debates, and verdicts stored locally
-- 🗄️ **Past Evaluations tab** — browse historical evaluation runs from the database
+- 🗄️ **Past Evaluations tab** — browse historical evaluation runs with search, filters, and sorting
 - 📋 **Three result views** — All Results, Top Matches, Full Debate Transcripts
+- 📊 **Metrics dashboard** — at-a-glance counts for High / Moderate / Low relevance papers
+- 🔍 **History search & filters** — keyword search, score range, date filter, and sort options
+- 📑 **Interactive table** — multi-row selection to view full debate details inline
+- 🗑️ **Delete management** — remove individual papers or entire evaluation runs from the database
 - 🟢🟡🔴 **Color-coded scoring** — instant visual relevance triage with judge chips
 - 📥 **JSON export** — download results for further analysis
 - 🔧 **Model selection** — Gemini 3 Pro, 3 Flash, 2.5 Pro, 2.5 Flash, 2.0 Flash
@@ -75,8 +80,8 @@ streamlit run Archive_research_multi-agent_debate.py
 Then:
 1. Enter your **Gemini API key** in the sidebar
 2. Describe your **research problem** in the text box
-3. Click **🚀 Fetch & Evaluate Papers**
-4. Check the **Past Evaluations** tab to review stored results
+3. Click **🚀 Fetch & Evaluate All** to evaluate every paper, or **📡 Fetch Papers Only** to browse first and selectively evaluate
+4. Check the **Past Evaluations** tab to search, filter, and review stored results
 
 ---
 
@@ -105,7 +110,7 @@ The app uses a local SQLite database (`paper_matcher.db`) with 4 tables:
 | `debate_rounds` | Advocate & Skeptic arguments per round per paper |
 | `judge_verdicts` | 5 independent judge scores, seeds, and verdicts per paper |
 
-The database file is created automatically and excluded from git via `.gitignore`.
+The database file is created automatically on first run.
 
 ---
 
@@ -115,8 +120,7 @@ The database file is created automatically and excluded from git via `.gitignore
 arxiv-paper-matcher/
 ├── Archive_research_multi-agent_debate.py   # Main Streamlit app (all-in-one)
 ├── requirements.txt                          # Python dependencies
-├── paper_matcher.db                          # SQLite DB (auto-created, gitignored)
-├── .gitignore
+├── paper_matcher.db                          # SQLite DB (auto-created at runtime)
 └── README.md
 ```
 
@@ -128,8 +132,7 @@ arxiv-paper-matcher/
 |---------|---------|
 | `streamlit` | Web UI framework |
 | `arxiv` | arXiv API client |
-| `google-genai` | Google Gemini SDK |
-| `sqlite3` | Database (Python stdlib) |
+| `google-genai` | Google Gemini SDK || `pandas` | Data tables in the Past Evaluations tab || `sqlite3` | Database (Python stdlib) |
 
 ---
 
