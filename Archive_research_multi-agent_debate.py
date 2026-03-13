@@ -15,9 +15,10 @@ import json
 import asyncio
 import random
 import sqlite3
+import threading
 import concurrent.futures
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
@@ -397,20 +398,27 @@ class DebateEngine:
             f"**Abstract:** {paper.abstract}\n"
         )
 
-    async def run_debate(self, paper: Paper, problem: str) -> DebateResult:
+    async def run_debate(self, paper: Paper, problem: str,
+                         status_callback: Optional[Callable[[str], None]] = None) -> DebateResult:
         """Run debate rounds then 5 independent judge verdicts (async)."""
+        def _status(msg: str):
+            if status_callback:
+                status_callback(msg)
+
         context = self._build_paper_context(paper, problem)
         result = DebateResult(paper=paper)
         debate_history = ""
 
         # ── Debate rounds (sequential: skeptic depends on advocate) ──
         for round_num in range(1, self.debate_rounds + 1):
+            _status(f"🟢 Advocate Round {round_num}/{self.debate_rounds}")
             advocate_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num}: Present your argument FOR this paper's relevance."
             )
             advocate_arg = await self._call_llm(ADVOCATE_SYSTEM, advocate_prompt)
 
+            _status(f"🔴 Skeptic Round {round_num}/{self.debate_rounds}")
             skeptic_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num} — Advocate said:\n{advocate_arg}\n\n"
@@ -429,6 +437,7 @@ class DebateEngine:
             )
 
         # ── 5-Judge Panel (all judges run concurrently) ──
+        _status("⚖️ Judge Panel (5 judges deliberating)")
         judge_base_prompt = (
             f"{context}\n\n"
             f"## Full Debate Transcript\n{debate_history}\n\n"
@@ -475,9 +484,8 @@ class DebateEngine:
             result.combined_reasons = best.key_reasons
             result.combined_suggested_use = best.suggested_use
 
+        _status(f"✅ Done — Score: {result.avg_score}/10")
         return result
-
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Rendering helpers
 # ──────────────────────────────────────────────────────────────────────────────
@@ -769,15 +777,38 @@ def main():
                     # Step 2 — Multi-agent debate (async judges, threaded papers)
                     results: list[DebateResult] = []
                     progress = st.progress(0, text="Evaluating papers...")
-                    status_text = st.empty()
+                    live_status = st.empty()
+
+                    # Thread-safe status tracking
+                    paper_status: dict[str, str] = {}
+                    status_lock = threading.Lock()
+
+                    def _make_status_callback(title: str):
+                        short = title[:60] + ("..." if len(title) > 60 else "")
+                        def _cb(msg: str):
+                            with status_lock:
+                                paper_status[short] = msg
+                        return _cb
+
+                    def _refresh_status():
+                        with status_lock:
+                            snapshot = dict(paper_status)
+                        if snapshot:
+                            lines = [f"| {t} | {s} |" for t, s in snapshot.items()]
+                            md = "| Paper | Status |\n|---|---|\n" + "\n".join(lines)
+                            live_status.markdown(md)
 
                     def evaluate_paper(paper: Paper) -> DebateResult:
                         """Each thread gets its own client + event loop."""
+                        cb = _make_status_callback(paper.title)
+                        cb("⏳ Queued")
                         try:
                             thread_client = genai.Client(api_key=api_key)
                             thread_engine = DebateEngine(client=thread_client, model_name=model_name)
-                            return asyncio.run(thread_engine.run_debate(paper, problem_statement))
+                            return asyncio.run(
+                                thread_engine.run_debate(paper, problem_statement, status_callback=cb))
                         except Exception as e:
+                            cb(f"❌ Failed: {e}")
                             return DebateResult(
                                 paper=paper,
                                 combined_verdict=f"Evaluation failed: {e}",
@@ -794,11 +825,10 @@ def main():
                             progress.progress(
                                 completed / len(papers),
                                 text=f"Evaluated {completed}/{len(papers)} papers...")
-                            status_text.text(
-                                f"Latest: {futures[future].title[:80]}...")
+                            _refresh_status()
 
                     progress.empty()
-                    status_text.empty()
+                    live_status.empty()
 
                     # Step 3 — Save to DB
                     for r in results:
@@ -874,19 +904,24 @@ def main():
                                 if not api_key:
                                     st.error("Please enter your Gemini API key.")
                                 else:
-                                    with st.spinner(f"Evaluating: {paper.title[:60]}..."):
-                                        try:
-                                            eval_client = genai.Client(api_key=api_key)
-                                            eval_engine = DebateEngine(
-                                                client=eval_client, model_name=model_name)
-                                            result = asyncio.run(
-                                                eval_engine.run_debate(paper, stored_problem))
-                                        except Exception as e:
-                                            result = DebateResult(
-                                                paper=paper,
-                                                combined_verdict=f"Evaluation failed: {e}",
-                                                avg_score=0.0,
-                                            )
+                                    single_status = st.empty()
+                                    def _single_cb(msg: str):
+                                        single_status.markdown(f"**Status:** {msg}")
+                                    try:
+                                        eval_client = genai.Client(api_key=api_key)
+                                        eval_engine = DebateEngine(
+                                            client=eval_client, model_name=model_name)
+                                        result = asyncio.run(
+                                            eval_engine.run_debate(
+                                                paper, stored_problem,
+                                                status_callback=_single_cb))
+                                    except Exception as e:
+                                        result = DebateResult(
+                                            paper=paper,
+                                            combined_verdict=f"Evaluation failed: {e}",
+                                            avg_score=0.0,
+                                        )
+                                    single_status.empty()
                                     # Save to DB
                                     eval_id = save_evaluation(stored_problem, model_name)
                                     paper_id = save_paper(eval_id, paper, result.avg_score)
