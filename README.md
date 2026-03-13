@@ -42,8 +42,7 @@ The debate runs **2 rounds** per paper, so the Advocate and Skeptic refine their
 - 📊 **Averaged scores** — more robust than a single judge call
 - 🟢🔴 **Advocate & Skeptic in main view** — see both arguments at a glance
 - ⚡ **Parallel evaluation** — configurable concurrency (1–10 workers)
-- � **Fetch Only mode** — browse fetched papers first, then selectively evaluate individual ones
-- 💾 **SQLite persistence** — all papers, debates, and verdicts stored locally
+- � **Fetch Only mode** — browse fetched papers first, then selectively evaluate individual ones- 📶 **Live evaluation status** — per-paper step tracking (Advocate, Skeptic, Judge Panel) during evaluation- 💾 **SQLite persistence** — all papers, debates, and verdicts stored locally
 - 🗄️ **Past Evaluations tab** — browse historical evaluation runs with search, filters, and sorting
 - 📋 **Three result views** — All Results, Top Matches, Full Debate Transcripts
 - 📊 **Metrics dashboard** — at-a-glance counts for High / Moderate / Low relevance papers
@@ -132,7 +131,9 @@ arxiv-paper-matcher/
 |---------|---------|
 | `streamlit` | Web UI framework |
 | `arxiv` | arXiv API client |
-| `google-genai` | Google Gemini SDK || `pandas` | Data tables in the Past Evaluations tab || `sqlite3` | Database (Python stdlib) |
+| `google-genai` | Google Gemini SDK |
+| `pandas` | Data tables in the Past Evaluations tab |
+| `sqlite3` | Database (Python stdlib) |
 
 ---
 
