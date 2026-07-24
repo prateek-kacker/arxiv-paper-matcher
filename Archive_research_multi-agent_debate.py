@@ -18,6 +18,7 @@ import asyncio
 import random
 import sqlite3
 import threading
+import time
 import queue as _queue
 import concurrent.futures
 from dataclasses import dataclass, field
@@ -631,11 +632,121 @@ class DebateEngine:
                 if attempt == max_retries - 1:
                     return f"[LLM Error: {e}]"
                 if is_rate_limit:
-                    # Longer backoff for rate limits: 4s, 8s, 16s, 32s, 64s
                     wait = (2 ** (attempt + 2)) + random.uniform(0, 2)
                 else:
                     wait = (2 ** attempt) + random.uniform(0, 1)
                 await asyncio.sleep(wait)
+
+    def _call_llm_sync_stream(self, system: str, user_prompt: str, temperature: float = 1.0):
+        """Sync generator that streams LLM text chunks. Use with st.write_stream."""
+        for attempt in range(6):
+            try:
+                stream = self.client.models.generate_content_stream(
+                    model=self.model_name,
+                    contents=user_prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction=system,
+                        temperature=temperature,
+                    ),
+                )
+                for chunk in stream:
+                    if chunk.text:
+                        yield chunk.text
+                return
+            except Exception as e:
+                err_str = str(e).lower()
+                is_rate_limit = ("resource" in err_str and "exhausted" in err_str) \
+                    or "429" in err_str or "rate" in err_str or "quota" in err_str
+                if attempt == 5:
+                    yield f"\n\n[LLM Error: {e}]"
+                    return
+                wait = (2 ** (attempt + 2) if is_rate_limit else 2 ** attempt) + random.uniform(0, 2)
+                time.sleep(wait)
+
+    def run_debate_live(self, paper: "Paper", problem: str) -> "DebateResult":
+        """Run a full debate with live token streaming rendered into the current Streamlit context.
+        Must be called from the main Streamlit thread (not a background thread)."""
+        context = self._build_paper_context(paper, problem)
+        result = DebateResult(paper=paper)
+        debate_history = ""
+
+        for round_num in range(1, self.debate_rounds + 1):
+            st.markdown(f"**🟢 Advocate — Round {round_num}/{self.debate_rounds}**")
+            advocate_prompt = (
+                f"{context}\n\n{debate_history}"
+                f"Round {round_num}: Present your argument FOR this paper's relevance."
+            )
+            advocate_text = st.write_stream(
+                self._call_llm_sync_stream(ADVOCATE_SYSTEM, advocate_prompt)
+            )
+
+            st.markdown(f"**🔴 Skeptic — Round {round_num}/{self.debate_rounds}**")
+            skeptic_prompt = (
+                f"{context}\n\n{debate_history}"
+                f"Round {round_num} — Advocate said:\n{advocate_text}\n\n"
+                f"Now present your counter-argument AGAINST this paper's relevance."
+            )
+            skeptic_text = st.write_stream(
+                self._call_llm_sync_stream(SKEPTIC_SYSTEM, skeptic_prompt)
+            )
+
+            result.rounds.append(DebateRound(
+                advocate_argument=advocate_text,
+                skeptic_argument=skeptic_text,
+            ))
+            debate_history += (
+                f"\n--- Round {round_num} ---\n"
+                f"Advocate: {advocate_text}\nSkeptic: {skeptic_text}\n"
+            )
+
+        # 5 judges run concurrently via asyncio (no streaming — keeps them parallel)
+        judge_msg = st.empty()
+        judge_msg.info("⚖️ 5 judges deliberating in parallel…")
+
+        judge_base_prompt = (
+            f"{context}\n\n## Full Debate Transcript\n{debate_history}\n\n"
+            "Now deliver your JSON verdict."
+        )
+        seeds = [random.randint(1, 999_999) for _ in range(NUM_JUDGES)]
+        temperatures_j = [0.5, 0.7, 0.9, 1.1, 1.3]
+
+        async def _gather_judges():
+            async def _one(i: int) -> JudgeVerdict:
+                seeded = (
+                    f"{judge_base_prompt}\n"
+                    f"(Judge run {i + 1}/{NUM_JUDGES}, seed={seeds[i]}. Evaluate independently.)"
+                )
+                raw = await self._call_llm(JUDGE_SYSTEM, seeded, temperature=temperatures_j[i])
+                jv = JudgeVerdict(run=i + 1, seed=seeds[i])
+                try:
+                    parsed = _parse_judge_json(raw)
+                    jv.relevance_score = int(parsed.get("relevance_score", 0))
+                    jv.verdict = parsed.get("verdict", "")
+                    jv.key_reasons = parsed.get("key_reasons", [])
+                    jv.suggested_use = parsed.get("suggested_use", "")
+                except (json.JSONDecodeError, ValueError):
+                    jv.verdict = raw
+                    jv.relevance_score = 0
+                return jv
+            return list(await asyncio.gather(*[_one(i) for i in range(NUM_JUDGES)]))
+
+        result.judge_verdicts = asyncio.run(_gather_judges())
+        judge_msg.empty()
+
+        valid_scores = [v.relevance_score for v in result.judge_verdicts if v.relevance_score > 0]
+        result.avg_score = round(sum(valid_scores) / len(valid_scores), 1) if valid_scores else 0.0
+        if valid_scores:
+            best = min(result.judge_verdicts, key=lambda v: abs(v.relevance_score - result.avg_score))
+            result.combined_verdict = best.verdict
+            result.combined_reasons = best.key_reasons
+            result.combined_suggested_use = best.suggested_use
+
+        score_icon = "🟢" if result.avg_score >= 7 else "🟡" if result.avg_score >= 4 else "🔴"
+        judge_chips = "  ".join(
+            f"J{v.run}: **{v.relevance_score}**" for v in result.judge_verdicts
+        )
+        st.success(f"{score_icon} **Score: {result.avg_score}/10** &nbsp;|&nbsp; {judge_chips}")
+        return result
 
     def _build_paper_context(self, paper: Paper, problem: str) -> str:
         return (
@@ -1196,67 +1307,41 @@ def _run_full_evaluation(
 
     eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
     results: list[DebateResult] = []
-    stage_header = st.empty()
-    progress = st.progress(0, text=f"{prefix}Evaluating papers...")
-    live_status = st.empty()
-    stage_header.info(f"**Stage 1 of 3 — Evaluating papers** &nbsp;|&nbsp; 0 / {len(papers)} complete")
 
-    paper_status: dict[str, str] = {}
-    status_lock = threading.Lock()
+    overall_progress = st.progress(0, text=f"{prefix}Starting evaluation of {len(papers)} papers…")
+    eng = DebateEngine(client=genai.Client(api_key=api_key), model_name=model_name)
 
-    def _make_status_callback(title: str):
-        short = title[:60] + ("..." if len(title) > 60 else "")
+    for idx, paper in enumerate(papers):
+        short_title = paper.title[:80] + ("…" if len(paper.title) > 80 else "")
+        overall_progress.progress(
+            idx / len(papers),
+            text=f"{prefix}Paper {idx + 1}/{len(papers)}: {short_title}",
+        )
+        score_placeholder = st.empty()
+        with st.expander(
+            f"📄 [{idx + 1}/{len(papers)}] {paper.title}",
+            expanded=True,
+        ):
+            st.caption(f"👤 {paper.authors} &nbsp;|&nbsp; 📅 {paper.published}")
+            try:
+                result = eng.run_debate_live(paper, problem_statement)
+            except Exception as e:
+                result = DebateResult(
+                    paper=paper,
+                    combined_verdict=f"Evaluation failed: {e}",
+                    avg_score=0.0,
+                )
+        results.append(result)
+        # Collapse completed paper and show inline score
+        score_icon = "🟢" if result.avg_score >= 7 else "🟡" if result.avg_score >= 4 else "🔴"
+        score_placeholder.markdown(
+            f"{score_icon} **{result.avg_score}/10** — {paper.title[:80]}"
+        )
 
-        def _cb(msg: str):
-            with status_lock:
-                paper_status[short] = msg
+    overall_progress.progress(1.0, text=f"{prefix}All {len(papers)} papers evaluated.")
 
-        return _cb
-
-    def _refresh_status():
-        with status_lock:
-            snapshot = dict(paper_status)
-        if snapshot:
-            lines = [f"| {t} | {s} |" for t, s in snapshot.items()]
-            md = "| Paper | Status |\n|---|---|\n" + "\n".join(lines)
-            live_status.markdown(md)
-
-    def evaluate_paper(paper: Paper) -> DebateResult:
-        cb = _make_status_callback(paper.title)
-        cb("⏳ Queued")
-        try:
-            thread_client = genai.Client(api_key=api_key)
-            thread_engine = DebateEngine(client=thread_client, model_name=model_name)
-            return asyncio.run(
-                thread_engine.run_debate(paper, problem_statement, status_callback=cb))
-        except Exception as e:
-            cb(f"❌ Failed: {e}")
-            return DebateResult(
-                paper=paper,
-                combined_verdict=f"Evaluation failed: {e}",
-                avg_score=0.0,
-            )
-
-    completed = 0
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
-        futures = {executor.submit(evaluate_paper, p): p for p in papers}
-        for future in concurrent.futures.as_completed(futures):
-            result = future.result()
-            results.append(result)
-            completed += 1
-            progress.progress(
-                completed / len(papers),
-                text=f"{prefix}Evaluated {completed}/{len(papers)} papers...",
-            )
-            stage_header.info(
-                f"**Stage 1 of 3 — Evaluating papers** &nbsp;|&nbsp; "
-                f"{completed} / {len(papers)} complete"
-            )
-            _refresh_status()
-
-    stage_header.info(f"**Stage 2 of 3 — Saving results to database** &nbsp;|&nbsp; {len(results)} papers evaluated")
-    progress.empty()
-    live_status.empty()
+    save_stage = st.empty()
+    save_stage.info(f"**Stage 2 of 3 — Saving results to database** &nbsp;|&nbsp; {len(results)} papers evaluated")
 
     for r in results:
         paper_id = save_paper(eval_id, r.paper, r.avg_score, sync_cloud=False)
@@ -1281,9 +1366,9 @@ def _run_full_evaluation(
             )
 
     # Upload once after all writes to avoid per-row cloud sync overhead.
-    stage_header.info("**Stage 3 of 3 — Syncing to cloud storage...**")
+    save_stage.info("**Stage 3 of 3 — Syncing to cloud storage...**")
     sync_db_to_gcs()
-    stage_header.empty()
+    save_stage.empty()
 
     results.sort(key=lambda r: r.avg_score, reverse=True)
     if save_to_session:
@@ -1660,24 +1745,17 @@ def main():
                                 if not effective_api_key:
                                     st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
                                 else:
-                                    single_status = st.empty()
-                                    def _single_cb(msg: str):
-                                        single_status.markdown(f"**Status:** {msg}")
                                     try:
                                         eval_client = genai.Client(api_key=effective_api_key)
                                         eval_engine = DebateEngine(
                                             client=eval_client, model_name=model_name)
-                                        result = asyncio.run(
-                                            eval_engine.run_debate(
-                                                paper, stored_problem,
-                                                status_callback=_single_cb))
+                                        result = eval_engine.run_debate_live(paper, stored_problem)
                                     except Exception as e:
                                         result = DebateResult(
                                             paper=paper,
                                             combined_verdict=f"Evaluation failed: {e}",
                                             avg_score=0.0,
                                         )
-                                    single_status.empty()
                                     # Save to DB
                                     eval_id = save_evaluation(stored_problem, model_name, sync_cloud=False)
                                     paper_id = save_paper(eval_id, paper, result.avg_score, sync_cloud=False)
