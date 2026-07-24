@@ -982,20 +982,16 @@ def main():
     st.title("📚 arXiv CS.CL Paper Matcher")
     st.caption("Multi-Agent Debate  •  5-Judge Panel  •  Gemini LLM  •  SQLite Persistence")
 
+    # ── Resolve API key from Secret Manager env (never shown in UI) ──
+    api_key = os.environ.get("GEMINI_API_KEY", "")
+
     # ── Sidebar ──
     with st.sidebar:
         st.header("⚙️ Settings")
-        _env_key = os.environ.get("GEMINI_API_KEY", "")
-        api_key = st.text_input(
-            "Google Gemini API Key",
-            type="password",
-            value=_env_key,
-            help=(
-                "Pre-filled from GEMINI_API_KEY secret when running on Cloud Run. "
-                "Override here if needed. "
-                "Get one at https://aistudio.google.com/apikey"
-            ),
-        )
+        if api_key:
+            st.success("🔑 API key loaded from Secret Manager")
+        else:
+            st.warning("⚠️ No API key found. Set GEMINI_API_KEY in Secret Manager.")
         model_name = st.selectbox("Gemini Model", [
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
@@ -1029,7 +1025,7 @@ def main():
             "6. Everything stored in SQLite DB"
         )
 
-    effective_api_key = _resolve_api_key(api_key)
+    effective_api_key = api_key  # always comes from Secret Manager env var
     due_schedules = load_due_recurring_schedules()
     if due_schedules:
         st.divider()
