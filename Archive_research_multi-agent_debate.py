@@ -24,6 +24,7 @@ from typing import Optional, Callable
 from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
+from urllib import request, error
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Database
@@ -911,6 +912,58 @@ def _build_export(results: list[DebateResult]) -> list[dict]:
     return export
 
 
+def _post_results_to_webhook(
+    *,
+    endpoint_url: str,
+    results: list[DebateResult],
+    evaluation_id: Optional[int],
+    problem_text: str,
+    model_name: str,
+    trigger: str,
+    schedule_id: Optional[int] = None,
+    token: str = "",
+) -> tuple[bool, str]:
+    """Post evaluation results JSON payload to an external webhook."""
+    endpoint = (endpoint_url or "").strip()
+    if not endpoint:
+        return False, "Webhook URL not configured"
+
+    payload = {
+        "source": "archive-paper-matcher",
+        "sent_at": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "trigger": trigger,
+        "evaluation": {
+            "id": evaluation_id,
+            "problem_text": problem_text,
+            "model_name": model_name,
+            "schedule_id": schedule_id,
+            "result_count": len(results),
+        },
+        "results": _build_export(results),
+    }
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "archive-paper-matcher/1.0",
+    }
+    if token.strip():
+        headers["Authorization"] = f"Bearer {token.strip()}"
+
+    data = json.dumps(payload).encode("utf-8")
+    req = request.Request(endpoint, data=data, headers=headers, method="POST")
+
+    try:
+        with request.urlopen(req, timeout=30) as resp:
+            status_code = getattr(resp, "status", 200)
+            if 200 <= status_code < 300:
+                return True, f"Posted successfully (HTTP {status_code})"
+            return False, f"Unexpected HTTP status {status_code}"
+    except error.HTTPError as e:
+        return False, f"Webhook HTTP error: {e.code}"
+    except Exception as e:
+        return False, f"Webhook request failed: {e}"
+
+
 def _resolve_api_key(user_key: str) -> str:
     """Prefer UI key; fallback to GEMINI_API_KEY for scheduled runs."""
     return (user_key or "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
@@ -1085,6 +1138,9 @@ def main():
 
     # ── Resolve API key from Secret Manager env (never shown in UI) ──
     api_key = os.environ.get("GEMINI_API_KEY", "")
+    webhook_url_default = os.environ.get("KACKERS_POST_URL", "")
+    webhook_token = os.environ.get("KACKERS_POST_TOKEN", "")
+    auto_post_default = os.environ.get("AUTO_POST_RESULTS", "false").strip().lower() == "true"
 
     # ── Sidebar ──
     with st.sidebar:
@@ -1100,6 +1156,23 @@ def main():
                 st.caption(f"💾 Persistent DB enabled: {restore_msg}")
         else:
             st.caption("💾 Persistent DB disabled (set PAPER_MATCHER_DB_BUCKET)")
+        st.divider()
+        st.markdown("**Webhook Output**")
+        webhook_url = st.text_input(
+            "Post output URL",
+            value=webhook_url_default,
+            placeholder="https://kackers.app/api/ingest",
+            help="Evaluation output is posted here as JSON.",
+        )
+        auto_post_results = st.checkbox(
+            "Auto-post completed evaluations",
+            value=auto_post_default,
+            help="When enabled, each full evaluation posts automatically.",
+        )
+        if webhook_token:
+            st.caption("🔐 Webhook token loaded from Secret Manager")
+        elif webhook_url.strip():
+            st.caption("ℹ️ No webhook token set (requests sent without Authorization header)")
         model_name = st.selectbox("Gemini Model", [
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
@@ -1141,7 +1214,7 @@ def main():
         if not effective_api_key:
             st.warning(
                 "Recurring evaluations are due, but no API key is available. "
-                "Set GEMINI_API_KEY in environment or enter a key in the sidebar."
+                "Set GEMINI_API_KEY in Secret Manager."
             )
         else:
             today = datetime.now().strftime("%Y-%m-%d")
@@ -1172,6 +1245,21 @@ def main():
                         eval_id,
                     )
                     st.success(f"{label}: completed (eval #{eval_id}, {len(results)} papers)")
+                    if auto_post_results and webhook_url.strip():
+                        ok, msg = _post_results_to_webhook(
+                            endpoint_url=webhook_url,
+                            results=results,
+                            evaluation_id=eval_id,
+                            problem_text=sch["problem_text"],
+                            model_name=sch["model_name"],
+                            trigger="recurring_due",
+                            schedule_id=sch["id"],
+                            token=webhook_token,
+                        )
+                        if ok:
+                            st.caption(f"📤 {label}: {msg}")
+                        else:
+                            st.warning(f"📤 {label}: {msg}")
             st.divider()
 
     # ── Page tabs ──
@@ -1267,6 +1355,23 @@ def main():
                     st.warning(err)
                 else:
                     st.success(f"✅ Saved {len(results)} papers to database (eval #{eval_id})")
+                    st.session_state["last_eval_id"] = eval_id
+                    st.session_state["last_eval_problem"] = problem_statement.strip()
+                    st.session_state["last_eval_model"] = model_name
+                    if auto_post_results and webhook_url.strip():
+                        ok, msg = _post_results_to_webhook(
+                            endpoint_url=webhook_url,
+                            results=results,
+                            evaluation_id=eval_id,
+                            problem_text=problem_statement.strip(),
+                            model_name=model_name,
+                            trigger="manual_full",
+                            token=webhook_token,
+                        )
+                        if ok:
+                            st.success(f"📤 {msg}")
+                        else:
+                            st.warning(f"📤 {msg}")
 
         # ── Fetch Only ──
         if fetch_only:
@@ -1486,6 +1591,23 @@ def main():
                 file_name="arxiv_paper_matches.json",
                 mime="application/json",
             )
+            if st.button("📤 Post Results to kackers.app", key="post_results_manual"):
+                if not webhook_url.strip():
+                    st.warning("Set the Post output URL in the sidebar first.")
+                else:
+                    ok, msg = _post_results_to_webhook(
+                        endpoint_url=webhook_url,
+                        results=results,
+                        evaluation_id=st.session_state.get("last_eval_id"),
+                        problem_text=st.session_state.get("last_eval_problem", ""),
+                        model_name=st.session_state.get("last_eval_model", model_name),
+                        trigger="manual_button",
+                        token=webhook_token,
+                    )
+                    if ok:
+                        st.success(f"📤 {msg}")
+                    else:
+                        st.warning(f"📤 {msg}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # RECURRING EVALUATIONS TAB
@@ -1612,7 +1734,7 @@ def main():
                     with a2:
                         if st.button("▶️ Run Now", key=f"run_rec_{sch['id']}", use_container_width=True):
                             if not effective_api_key:
-                                st.error("Enter API key in sidebar or set GEMINI_API_KEY.")
+                                st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
                             else:
                                 today = datetime.now().strftime("%Y-%m-%d")
                                 eval_id, results, err = _run_full_evaluation(
@@ -1639,6 +1761,21 @@ def main():
                                         eval_id,
                                     )
                                     st.success(f"Run complete. Created evaluation #{eval_id}.")
+                                    if auto_post_results and webhook_url.strip():
+                                        ok, msg = _post_results_to_webhook(
+                                            endpoint_url=webhook_url,
+                                            results=results,
+                                            evaluation_id=eval_id,
+                                            problem_text=sch["problem_text"],
+                                            model_name=sch["model_name"],
+                                            trigger="recurring_run_now",
+                                            schedule_id=sch["id"],
+                                            token=webhook_token,
+                                        )
+                                        if ok:
+                                            st.success(f"📤 {msg}")
+                                        else:
+                                            st.warning(f"📤 {msg}")
                                     st.rerun()
                     with a3:
                         if st.button("🗑️ Delete", key=f"del_rec_{sch['id']}", use_container_width=True):
