@@ -1141,6 +1141,8 @@ def main():
     webhook_url_default = os.environ.get("KACKERS_POST_URL", "")
     webhook_token = os.environ.get("KACKERS_POST_TOKEN", "")
     auto_post_default = os.environ.get("AUTO_POST_RESULTS", "false").strip().lower() == "true"
+    auto_push_recurring_default = os.environ.get(
+        "AUTO_PUSH_RECURRING_RESULTS", "true").strip().lower() == "true"
 
     # ── Sidebar ──
     with st.sidebar:
@@ -1168,6 +1170,11 @@ def main():
             "Auto-post completed evaluations",
             value=auto_post_default,
             help="When enabled, each full evaluation posts automatically.",
+        )
+        auto_push_recurring_results = st.checkbox(
+            "Auto-push recurring evaluations",
+            value=auto_push_recurring_default,
+            help="When enabled, recurring runs are posted automatically to the webhook.",
         )
         if webhook_token:
             st.caption("🔐 Webhook token loaded from Secret Manager")
@@ -1245,7 +1252,7 @@ def main():
                         eval_id,
                     )
                     st.success(f"{label}: completed (eval #{eval_id}, {len(results)} papers)")
-                    if auto_post_results and webhook_url.strip():
+                    if auto_push_recurring_results and webhook_url.strip():
                         ok, msg = _post_results_to_webhook(
                             endpoint_url=webhook_url,
                             results=results,
@@ -1761,7 +1768,7 @@ def main():
                                         eval_id,
                                     )
                                     st.success(f"Run complete. Created evaluation #{eval_id}.")
-                                    if auto_post_results and webhook_url.strip():
+                                    if auto_push_recurring_results and webhook_url.strip():
                                         ok, msg = _post_results_to_webhook(
                                             endpoint_url=webhook_url,
                                             results=results,
