@@ -34,6 +34,7 @@ from urllib import request, error
 DB_PATH = Path(os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher.db")))
 DB_GCS_BUCKET = os.environ.get("PAPER_MATCHER_DB_BUCKET", "").strip()
 DB_GCS_BLOB = os.environ.get("PAPER_MATCHER_DB_BLOB", "paper_matcher.db").strip() or "paper_matcher.db"
+PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "240"))
 _DB_SYNC_LOCK = threading.Lock()
 
 
@@ -1014,7 +1015,22 @@ def _run_evaluation_headless(
         try:
             c = genai.Client(api_key=api_key)
             eng = DebateEngine(client=c, model_name=model_name)
-            return asyncio.run(eng.run_debate(paper, problem_statement))
+            result = asyncio.run(
+                asyncio.wait_for(
+                    eng.run_debate(paper, problem_statement),
+                    timeout=max(PAPER_EVAL_TIMEOUT_SECONDS, 30),
+                )
+            )
+            return result
+        except TimeoutError:
+            return DebateResult(
+                paper=paper,
+                combined_verdict=(
+                    f"Evaluation timed out after {max(PAPER_EVAL_TIMEOUT_SECONDS, 30)}s. "
+                    "Try fewer papers or lower parallel evaluations."
+                ),
+                avg_score=0.0,
+            )
         except Exception as exc:
             return DebateResult(
                 paper=paper,
@@ -1074,6 +1090,7 @@ def _launch_bg_recurring(task_id: str, sch: dict, api_key: str,
         "result_count": 0,
         "error": None,
         "started_at": datetime.now().strftime("%H:%M:%S"),
+        "started_ts": datetime.now().timestamp(),
         "sch": sch,
     }
     q.put({"task_id": task_id, "status": "queued",
@@ -1806,9 +1823,14 @@ def main():
                     stage_label = stage_map.get(t.get("stage", ""), t.get("stage", ""))
                     done_p = t.get("done_papers") or t.get("done", 0)
                     total_p = t.get("total_papers") or t.get("total", 0)
+                    elapsed_txt = ""
+                    started_ts = t.get("started_ts")
+                    if started_ts:
+                        elapsed_s = max(0, int(datetime.now().timestamp() - started_ts))
+                        elapsed_txt = f" &nbsp;|&nbsp; ⏱️ {elapsed_s}s"
                     progress_txt = (f" — {done_p}/{total_p} papers"
                                     if t.get("stage") == "evaluating" and total_p else "")
-                    st.markdown(f"**{t['label']}** &nbsp;|&nbsp; {stage_label}{progress_txt}")
+                    st.markdown(f"**{t['label']}** &nbsp;|&nbsp; {stage_label}{progress_txt}{elapsed_txt}")
                     if t.get("stage") == "evaluating" and total_p:
                         st.progress(min(done_p / max(total_p, 1), 1.0), text=f"{stage_label} ({done_p}/{total_p})")
                     elif t.get("stage") in {"fetching", "saving", "syncing"}:
