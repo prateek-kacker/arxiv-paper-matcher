@@ -1080,7 +1080,8 @@ def _launch_bg_recurring(task_id: str, sch: dict, api_key: str,
     def _thread():
         def _cb(stage: str, done: int, total: int):
             q.put({"task_id": task_id, "status": "running",
-                   "stage": stage, "done": done, "total": total})
+                   "stage": stage, "done_papers": done, "total_papers": total,
+                   "done": done, "total": total})
 
         eval_id, results, err = _run_evaluation_headless(
             api_key=api_key,
@@ -1806,11 +1807,12 @@ def main():
                     progress_txt = (f" — {done_p}/{total_p} papers"
                                     if t.get("stage") == "evaluating" and total_p else "")
                     st.markdown(f"**{t['label']}** &nbsp;|&nbsp; {stage_label}{progress_txt}")
-                # Auto-refresh every 3 seconds while jobs are active
-                st.caption("🔄 Page refreshes automatically while evaluation is running.")
-                import time as _time
-                _time.sleep(3)
-                st.rerun()
+                    if t.get("stage") == "evaluating" and total_p:
+                        st.progress(min(done_p / max(total_p, 1), 1.0), text=f"{stage_label} ({done_p}/{total_p})")
+                    elif t.get("stage") in {"fetching", "saving", "syncing"}:
+                        st.progress(0.0, text=stage_label)
+                st.caption("🔄 Updating every 3 seconds while evaluation is running.")
+                st.autorefresh(interval=3000, limit=None)
 
             if done_tasks:
                 for t in done_tasks.values():
