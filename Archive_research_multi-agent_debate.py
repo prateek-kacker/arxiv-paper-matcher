@@ -1076,6 +1076,8 @@ def _launch_bg_recurring(task_id: str, sch: dict, api_key: str,
         "started_at": datetime.now().strftime("%H:%M:%S"),
         "sch": sch,
     }
+    q.put({"task_id": task_id, "status": "queued",
+           "stage": "Starting…", "done_papers": 0, "total_papers": sch.get("max_papers") or "?"})
 
     def _thread():
         def _cb(stage: str, done: int, total: int):
@@ -1966,6 +1968,7 @@ def main():
                                 st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
                             else:
                                 task_id = f"manual_{sch['id']}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                                st.info(f"🚀 Starting background evaluation for {sch.get('label') or f'Schedule #{sch['id']}'}…")
                                 _launch_bg_recurring(
                                     task_id=task_id,
                                     sch=sch,
