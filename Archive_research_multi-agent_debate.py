@@ -474,6 +474,10 @@ def find_matching_past_papers(urls: list[str]) -> dict[str, list[dict]]:
 # Data Models
 # ──────────────────────────────────────────────────────────────────────────────
 
+class LLMQuotaExhaustedError(Exception):
+    """Raised when a model's daily quota is exhausted — retrying won't help for hours."""
+
+
 @dataclass
 class Paper:
     title: str
@@ -624,11 +628,18 @@ class DebateEngine:
                 )
                 return response.text
             except Exception as e:
-                err_str = str(e).lower()
-                is_rate_limit = ("resource" in err_str and "exhausted" in err_str) \
-                    or "429" in err_str \
-                    or "rate" in err_str \
-                    or "quota" in err_str
+                err_str = str(e)
+                lower = err_str.lower()
+                is_daily_quota = "per_day" in lower or "generate_requests_per_day" in lower
+                if is_daily_quota:
+                    return (
+                        f"[Daily quota exhausted for model '{self.model_name}'. "
+                        f"Switch to a different Gemini model or try again later.]"
+                    )
+                is_rate_limit = ("resource" in lower and "exhausted" in lower) \
+                    or "429" in lower \
+                    or "rate" in lower \
+                    or "quota" in lower
                 if attempt == max_retries - 1:
                     return f"[LLM Error: {e}]"
                 if is_rate_limit:
@@ -637,8 +648,12 @@ class DebateEngine:
                     wait = (2 ** attempt) + random.uniform(0, 1)
                 await asyncio.sleep(wait)
 
-    def _call_llm_sync_stream(self, system: str, user_prompt: str, temperature: float = 1.0):
-        """Sync generator that streams LLM text chunks. Use with st.write_stream."""
+    def _call_llm_sync_stream(self, system: str, user_prompt: str, temperature: float = 1.0,
+                               status_cb: Optional[Callable[[str], None]] = None):
+        """Sync generator that streams LLM text chunks. Use with st.write_stream.
+        Raises LLMQuotaExhaustedError immediately on a daily-quota 429 (no point retrying).
+        Calls status_cb(msg) with a human-readable note before each transient retry sleep,
+        and status_cb("") to clear it once resolved."""
         for attempt in range(6):
             try:
                 stream = self.client.models.generate_content_stream(
@@ -654,40 +669,70 @@ class DebateEngine:
                         yield chunk.text
                 return
             except Exception as e:
-                err_str = str(e).lower()
-                is_rate_limit = ("resource" in err_str and "exhausted" in err_str) \
-                    or "429" in err_str or "rate" in err_str or "quota" in err_str
+                err_str = str(e)
+                lower = err_str.lower()
+                is_daily_quota = "per_day" in lower or "generate_requests_per_day" in lower
+                if is_daily_quota:
+                    raise LLMQuotaExhaustedError(
+                        f"Daily quota exhausted for model '{self.model_name}'. "
+                        f"Switch to a different Gemini model in the sidebar, or try again later.\n\n"
+                        f"Details: {err_str[:300]}"
+                    ) from e
+                is_rate_limit = ("resource" in lower and "exhausted" in lower) \
+                    or "429" in lower or "rate" in lower or "quota" in lower
                 if attempt == 5:
                     yield f"\n\n[LLM Error: {e}]"
                     return
                 wait = (2 ** (attempt + 2) if is_rate_limit else 2 ** attempt) + random.uniform(0, 2)
+                if status_cb:
+                    reason = "Rate limited" if is_rate_limit else "Error"
+                    status_cb(f"⏳ {reason} — retrying attempt {attempt + 2}/6 in {wait:.0f}s… ({err_str[:120]})")
                 time.sleep(wait)
+                if status_cb:
+                    status_cb("")
 
     def run_debate_live(self, paper: "Paper", problem: str) -> "DebateResult":
         """Run a full debate with live token streaming rendered into the current Streamlit context.
-        Must be called from the main Streamlit thread (not a background thread)."""
+        Must be called from the main Streamlit thread (not a background thread).
+        Raises LLMQuotaExhaustedError if the model's daily quota is exhausted."""
         context = self._build_paper_context(paper, problem)
         result = DebateResult(paper=paper)
         debate_history = ""
 
         for round_num in range(1, self.debate_rounds + 1):
             st.markdown(f"**🟢 Advocate — Round {round_num}/{self.debate_rounds}**")
+            retry_ph = st.empty()
+
+            def _retry_status(msg: str, _ph=retry_ph):
+                if msg:
+                    _ph.warning(msg)
+                else:
+                    _ph.empty()
+
             advocate_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num}: Present your argument FOR this paper's relevance."
             )
             advocate_text = st.write_stream(
-                self._call_llm_sync_stream(ADVOCATE_SYSTEM, advocate_prompt)
+                self._call_llm_sync_stream(ADVOCATE_SYSTEM, advocate_prompt, status_cb=_retry_status)
             )
 
             st.markdown(f"**🔴 Skeptic — Round {round_num}/{self.debate_rounds}**")
+            retry_ph2 = st.empty()
+
+            def _retry_status2(msg: str, _ph=retry_ph2):
+                if msg:
+                    _ph.warning(msg)
+                else:
+                    _ph.empty()
+
             skeptic_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num} — Advocate said:\n{advocate_text}\n\n"
                 f"Now present your counter-argument AGAINST this paper's relevance."
             )
             skeptic_text = st.write_stream(
-                self._call_llm_sync_stream(SKEPTIC_SYSTEM, skeptic_prompt)
+                self._call_llm_sync_stream(SKEPTIC_SYSTEM, skeptic_prompt, status_cb=_retry_status2)
             )
 
             result.rounds.append(DebateRound(
@@ -1318,6 +1363,7 @@ def _run_full_evaluation(
             text=f"{prefix}Paper {idx + 1}/{len(papers)}: {short_title}",
         )
         score_placeholder = st.empty()
+        quota_exhausted = False
         with st.expander(
             f"📄 [{idx + 1}/{len(papers)}] {paper.title}",
             expanded=True,
@@ -1325,6 +1371,10 @@ def _run_full_evaluation(
             st.caption(f"👤 {paper.authors} &nbsp;|&nbsp; 📅 {paper.published}")
             try:
                 result = eng.run_debate_live(paper, problem_statement)
+            except LLMQuotaExhaustedError as e:
+                st.error(f"🚫 {e}")
+                result = DebateResult(paper=paper, combined_verdict=str(e), avg_score=0.0)
+                quota_exhausted = True
             except Exception as e:
                 result = DebateResult(
                     paper=paper,
@@ -1337,8 +1387,16 @@ def _run_full_evaluation(
         score_placeholder.markdown(
             f"{score_icon} **{result.avg_score}/10** — {paper.title[:80]}"
         )
+        if quota_exhausted:
+            remaining = len(papers) - idx - 1
+            if remaining > 0:
+                st.warning(
+                    f"⏹️ Stopped early — skipping {remaining} remaining paper(s) because the "
+                    f"model's daily quota is exhausted. Switch to a different Gemini model and re-run."
+                )
+            break
 
-    overall_progress.progress(1.0, text=f"{prefix}All {len(papers)} papers evaluated.")
+    overall_progress.progress(1.0, text=f"{prefix}Evaluated {len(results)}/{len(papers)} papers.")
 
     save_stage = st.empty()
     save_stage.info(f"**Stage 2 of 3 — Saving results to database** &nbsp;|&nbsp; {len(results)} papers evaluated")
@@ -1750,6 +1808,13 @@ def main():
                                         eval_engine = DebateEngine(
                                             client=eval_client, model_name=model_name)
                                         result = eval_engine.run_debate_live(paper, stored_problem)
+                                    except LLMQuotaExhaustedError as e:
+                                        st.error(f"🚫 {e}")
+                                        result = DebateResult(
+                                            paper=paper,
+                                            combined_verdict=str(e),
+                                            avg_score=0.0,
+                                        )
                                     except Exception as e:
                                         result = DebateResult(
                                             paper=paper,
