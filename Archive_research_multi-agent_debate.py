@@ -18,6 +18,7 @@ import asyncio
 import random
 import sqlite3
 import threading
+import queue as _queue
 import concurrent.futures
 from dataclasses import dataclass, field
 from typing import Optional, Callable
@@ -969,6 +970,178 @@ def _resolve_api_key(user_key: str) -> str:
     return (user_key or "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
 
 
+def _run_evaluation_headless(
+    *,
+    api_key: str,
+    problem_statement: str,
+    model_name: str,
+    max_papers: Optional[int],
+    days_back: Optional[int],
+    keyword_filter: str,
+    max_concurrent: int,
+    min_score: int,
+    progress_cb=None,  # callable(stage: str, done: int, total: int)
+) -> tuple[Optional[int], list[DebateResult], Optional[str]]:
+    """Run evaluation without any Streamlit UI calls. Safe for background threads."""
+
+    def _cb(stage: str, done: int = 0, total: int = 0):
+        if progress_cb:
+            try:
+                progress_cb(stage, done, total)
+            except Exception:
+                pass
+
+    _cb("fetching", 0, 0)
+    try:
+        papers = fetch_arxiv_papers(
+            max_results=max_papers,
+            search_query=keyword_filter,
+            days_back=days_back,
+        )
+    except Exception as e:
+        return None, [], f"Failed to fetch papers: {e}"
+
+    if not papers:
+        return None, [], "No papers found. Try adjusting keyword filters."
+
+    _cb("evaluating", 0, len(papers))
+    eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
+    results: list[DebateResult] = []
+    completed = 0
+    _lock = threading.Lock()
+
+    def _evaluate(paper: Paper) -> DebateResult:
+        try:
+            c = genai.Client(api_key=api_key)
+            eng = DebateEngine(client=c, model_name=model_name)
+            return asyncio.run(eng.run_debate(paper, problem_statement))
+        except Exception as exc:
+            return DebateResult(
+                paper=paper,
+                combined_verdict=f"Evaluation failed: {exc}",
+                avg_score=0.0,
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        futures = {executor.submit(_evaluate, p): p for p in papers}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            results.append(result)
+            with _lock:
+                completed += 1
+            _cb("evaluating", completed, len(papers))
+
+    _cb("saving", 0, len(results))
+    for r in results:
+        paper_id = save_paper(eval_id, r.paper, r.avg_score, sync_cloud=False)
+        for idx, rnd in enumerate(r.rounds, 1):
+            save_debate_round(
+                paper_id, idx,
+                rnd.advocate_argument, rnd.skeptic_argument,
+                sync_cloud=False,
+            )
+        for jv in r.judge_verdicts:
+            save_judge_verdict(
+                paper_id, jv.run, jv.seed, jv.relevance_score,
+                jv.verdict, jv.key_reasons, jv.suggested_use,
+                sync_cloud=False,
+            )
+
+    _cb("syncing", 0, 0)
+    sync_db_to_gcs()
+
+    results.sort(key=lambda r: r.avg_score, reverse=True)
+    return eval_id, results, None
+
+
+def _launch_bg_recurring(task_id: str, sch: dict, api_key: str,
+                          auto_push: bool, webhook_url: str, webhook_token: str):
+    """Launch a background thread for a recurring evaluation and track it in session state."""
+    if "_bg_queue" not in st.session_state:
+        st.session_state["_bg_queue"] = _queue.Queue()
+    if "_bg_tasks" not in st.session_state:
+        st.session_state["_bg_tasks"] = {}
+
+    q: _queue.Queue = st.session_state["_bg_queue"]
+    st.session_state["_bg_tasks"][task_id] = {
+        "label": sch.get("label") or f"Schedule #{sch['id']}",
+        "sch_id": sch["id"],
+        "status": "queued",
+        "stage": "Waiting to start…",
+        "done_papers": 0,
+        "total_papers": sch.get("max_papers") or "?",
+        "eval_id": None,
+        "result_count": 0,
+        "error": None,
+        "started_at": datetime.now().strftime("%H:%M:%S"),
+        "sch": sch,
+    }
+
+    def _thread():
+        def _cb(stage: str, done: int, total: int):
+            q.put({"task_id": task_id, "status": "running",
+                   "stage": stage, "done": done, "total": total})
+
+        eval_id, results, err = _run_evaluation_headless(
+            api_key=api_key,
+            problem_statement=sch["problem_text"],
+            model_name=sch["model_name"],
+            max_papers=sch.get("max_papers"),
+            days_back=sch.get("days_back"),
+            keyword_filter=sch.get("keyword_filter") or "",
+            max_concurrent=sch.get("max_concurrent") or 3,
+            min_score=sch.get("min_score") or 6,
+            progress_cb=_cb,
+        )
+        today = datetime.now().strftime("%Y-%m-%d")
+        if err:
+            update_schedule_last_run(sch["id"], today, "failed", err, None)
+            q.put({"task_id": task_id, "status": "failed", "error": err})
+        else:
+            update_schedule_last_run(sch["id"], today, "success",
+                                     f"Saved {len(results)} papers", eval_id)
+            post_ok, post_msg = None, None
+            if auto_push and webhook_url.strip():
+                post_ok, post_msg = _post_results_to_webhook(
+                    endpoint_url=webhook_url,
+                    results=results,
+                    evaluation_id=eval_id,
+                    problem_text=sch["problem_text"],
+                    model_name=sch["model_name"],
+                    trigger="recurring_bg",
+                    schedule_id=sch["id"],
+                    token=webhook_token,
+                )
+            q.put({"task_id": task_id, "status": "done",
+                   "eval_id": eval_id, "result_count": len(results),
+                   "post_ok": post_ok, "post_msg": post_msg})
+
+    threading.Thread(target=_thread, daemon=True).start()
+
+
+def _drain_bg_queue():
+    """Drain pending background task updates into session state. Call at top of main()."""
+    if "_bg_queue" not in st.session_state:
+        return
+    q: _queue.Queue = st.session_state["_bg_queue"]
+    tasks: dict = st.session_state.get("_bg_tasks", {})
+    while True:
+        try:
+            msg = q.get_nowait()
+        except _queue.Empty:
+            break
+        tid = msg.get("task_id")
+        if tid and tid in tasks:
+            tasks[tid].update(msg)
+    st.session_state["_bg_tasks"] = tasks
+
+
+def _bg_tasks_running() -> bool:
+    """Return True if any background evaluation is still queued or running."""
+    tasks = st.session_state.get("_bg_tasks", {})
+    return any(t["status"] in ("queued", "running") for t in tasks.values())
+
+
 def _run_full_evaluation(
     *,
     api_key: str,
@@ -1223,60 +1396,25 @@ def main():
         )
 
     effective_api_key = api_key  # always comes from Secret Manager env var
-    due_schedules = load_due_recurring_schedules()
-    if due_schedules:
-        st.divider()
-        st.subheader("⏰ Running Due Recurring Evaluations")
-        if not effective_api_key:
-            st.warning(
-                "Recurring evaluations are due, but no API key is available. "
-                "Set GEMINI_API_KEY in Secret Manager."
-            )
-        else:
-            today = datetime.now().strftime("%Y-%m-%d")
-            for sch in due_schedules:
-                label = sch.get("label") or f"Schedule #{sch['id']}"
-                st.caption(f"Running {label} ({sch['run_time']})")
-                eval_id, results, err = _run_full_evaluation(
+
+    # ── Drain background task queue (non-blocking) ──
+    _drain_bg_queue()
+
+    # ── Launch due recurring schedules in background (non-blocking) ──
+    if effective_api_key:
+        existing_task_ids = set(st.session_state.get("_bg_tasks", {}).keys())
+        due_schedules = load_due_recurring_schedules()
+        for sch in due_schedules:
+            task_id = f"due_{sch['id']}_{datetime.now().strftime('%Y-%m-%d')}"
+            if task_id not in existing_task_ids:
+                _launch_bg_recurring(
+                    task_id=task_id,
+                    sch=sch,
                     api_key=effective_api_key,
-                    problem_statement=sch["problem_text"],
-                    model_name=sch["model_name"],
-                    max_papers=sch.get("max_papers"),
-                    days_back=sch.get("days_back"),
-                    keyword_filter=sch.get("keyword_filter") or "",
-                    max_concurrent=sch.get("max_concurrent") or 3,
-                    min_score=sch.get("min_score") or 6,
-                    save_to_session=False,
-                    status_prefix=f"[Recurring #{sch['id']}]",
+                    auto_push=auto_push_recurring_results,
+                    webhook_url=webhook_url,
+                    webhook_token=webhook_token,
                 )
-                if err:
-                    update_schedule_last_run(sch["id"], today, "failed", err, None)
-                    st.error(f"{label}: {err}")
-                else:
-                    update_schedule_last_run(
-                        sch["id"],
-                        today,
-                        "success",
-                        f"Saved {len(results)} papers",
-                        eval_id,
-                    )
-                    st.success(f"{label}: completed (eval #{eval_id}, {len(results)} papers)")
-                    if auto_push_recurring_results and webhook_url.strip():
-                        ok, msg = _post_results_to_webhook(
-                            endpoint_url=webhook_url,
-                            results=results,
-                            evaluation_id=eval_id,
-                            problem_text=sch["problem_text"],
-                            model_name=sch["model_name"],
-                            trigger="recurring_due",
-                            schedule_id=sch["id"],
-                            token=webhook_token,
-                        )
-                        if ok:
-                            st.caption(f"📤 {label}: {msg}")
-                        else:
-                            st.warning(f"📤 {label}: {msg}")
-            st.divider()
 
     # ── Page tabs ──
     page_new, page_recurring, page_history = st.tabs([
@@ -1643,6 +1781,63 @@ def main():
             "Due jobs run when this app is active."
         )
 
+        # ── Background task status panel ──
+        bg_tasks: dict = st.session_state.get("_bg_tasks", {})
+        if bg_tasks:
+            active = {tid: t for tid, t in bg_tasks.items()
+                      if t["status"] in ("queued", "running")}
+            done_tasks = {tid: t for tid, t in bg_tasks.items()
+                         if t["status"] == "done"}
+            failed_tasks = {tid: t for tid, t in bg_tasks.items()
+                            if t["status"] == "failed"}
+
+            if active:
+                st.info(f"⏳ **{len(active)} evaluation(s) running in background** — tabs remain accessible.")
+                for t in active.values():
+                    stage_map = {
+                        "fetching": "📡 Fetching papers from arXiv…",
+                        "evaluating": "🔬 Running multi-agent debate…",
+                        "saving": "💾 Saving to database…",
+                        "syncing": "☁️ Syncing to cloud…",
+                    }
+                    stage_label = stage_map.get(t.get("stage", ""), t.get("stage", ""))
+                    done_p = t.get("done_papers") or t.get("done", 0)
+                    total_p = t.get("total_papers") or t.get("total", 0)
+                    progress_txt = (f" — {done_p}/{total_p} papers"
+                                    if t.get("stage") == "evaluating" and total_p else "")
+                    st.markdown(f"**{t['label']}** &nbsp;|&nbsp; {stage_label}{progress_txt}")
+                # Auto-refresh every 3 seconds while jobs are active
+                st.caption("🔄 Page refreshes automatically while evaluation is running.")
+                import time as _time
+                _time.sleep(3)
+                st.rerun()
+
+            if done_tasks:
+                for t in done_tasks.values():
+                    post_note = ""
+                    if t.get("post_ok") is True:
+                        post_note = " &nbsp;|&nbsp; 📤 Posted to webhook"
+                    elif t.get("post_ok") is False:
+                        post_note = f" &nbsp;|&nbsp; ⚠️ Webhook failed: {t.get('post_msg', '')}"
+                    st.success(
+                        f"✅ **{t['label']}** complete — "
+                        f"eval #{t.get('eval_id')}, {t.get('result_count', 0)} papers{post_note}"
+                    )
+
+            if failed_tasks:
+                for t in failed_tasks.values():
+                    st.error(f"❌ **{t['label']}** failed: {t.get('error', 'unknown error')}")
+
+            if done_tasks or failed_tasks:
+                if st.button("🗑️ Clear completed/failed status", key="clear_bg_tasks"):
+                    st.session_state["_bg_tasks"] = {
+                        tid: t for tid, t in bg_tasks.items()
+                        if t["status"] in ("queued", "running")
+                    }
+                    st.rerun()
+
+            st.divider()
+
         st.markdown("#### ➕ Create Recurring Schedule")
         with st.form("create_recurring_form"):
             schedule_label = st.text_input(
@@ -1756,51 +1951,28 @@ def main():
                             set_recurring_schedule_active(sch["id"], not bool(sch.get("is_active")))
                             st.rerun()
                     with a2:
-                        if st.button("▶️ Run Now", key=f"run_rec_{sch['id']}", use_container_width=True):
+                        # Check if a background task for this schedule is already running
+                        running_task_ids = [
+                            tid for tid, t in st.session_state.get("_bg_tasks", {}).items()
+                            if t.get("sch_id") == sch["id"] and t["status"] in ("queued", "running")
+                        ]
+                        if running_task_ids:
+                            st.button("⏳ Running…", key=f"run_rec_{sch['id']}", disabled=True,
+                                      use_container_width=True)
+                        elif st.button("▶️ Run Now", key=f"run_rec_{sch['id']}", use_container_width=True):
                             if not effective_api_key:
                                 st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
                             else:
-                                today = datetime.now().strftime("%Y-%m-%d")
-                                eval_id, results, err = _run_full_evaluation(
+                                task_id = f"manual_{sch['id']}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                                _launch_bg_recurring(
+                                    task_id=task_id,
+                                    sch=sch,
                                     api_key=effective_api_key,
-                                    problem_statement=sch["problem_text"],
-                                    model_name=sch["model_name"],
-                                    max_papers=sch.get("max_papers"),
-                                    days_back=sch.get("days_back"),
-                                    keyword_filter=sch.get("keyword_filter") or "",
-                                    max_concurrent=sch.get("max_concurrent") or 3,
-                                    min_score=sch.get("min_score") or 6,
-                                    save_to_session=False,
-                                    status_prefix=f"[Recurring #{sch['id']}]",
+                                    auto_push=auto_push_recurring_results,
+                                    webhook_url=webhook_url,
+                                    webhook_token=webhook_token,
                                 )
-                                if err:
-                                    update_schedule_last_run(sch["id"], today, "failed", err, None)
-                                    st.error(err)
-                                else:
-                                    update_schedule_last_run(
-                                        sch["id"],
-                                        today,
-                                        "success",
-                                        f"Saved {len(results)} papers",
-                                        eval_id,
-                                    )
-                                    st.success(f"Run complete. Created evaluation #{eval_id}.")
-                                    if auto_push_recurring_results and webhook_url.strip():
-                                        ok, msg = _post_results_to_webhook(
-                                            endpoint_url=webhook_url,
-                                            results=results,
-                                            evaluation_id=eval_id,
-                                            problem_text=sch["problem_text"],
-                                            model_name=sch["model_name"],
-                                            trigger="recurring_run_now",
-                                            schedule_id=sch["id"],
-                                            token=webhook_token,
-                                        )
-                                        if ok:
-                                            st.success(f"📤 {msg}")
-                                        else:
-                                            st.warning(f"📤 {msg}")
-                                    st.rerun()
+                                st.rerun()
                     with a3:
                         if st.button("🗑️ Delete", key=f"del_rec_{sch['id']}", use_container_width=True):
                             delete_recurring_schedule(sch["id"])
