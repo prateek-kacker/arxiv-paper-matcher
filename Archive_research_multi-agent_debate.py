@@ -11,6 +11,7 @@ import streamlit as st
 import arxiv
 from google import genai
 from google.genai import types
+from google.cloud import storage
 import json
 import os
 import asyncio
@@ -29,6 +30,66 @@ import pandas as pd
 # ──────────────────────────────────────────────────────────────────────────────
 
 DB_PATH = Path(os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher.db")))
+DB_GCS_BUCKET = os.environ.get("PAPER_MATCHER_DB_BUCKET", "").strip()
+DB_GCS_BLOB = os.environ.get("PAPER_MATCHER_DB_BLOB", "paper_matcher.db").strip() or "paper_matcher.db"
+_DB_SYNC_LOCK = threading.Lock()
+
+
+def _db_sidecar_paths() -> list[Path]:
+    """Return SQLite sidecar file paths for WAL mode."""
+    return [
+        Path(str(DB_PATH) + "-wal"),
+        Path(str(DB_PATH) + "-shm"),
+    ]
+
+
+def _checkpoint_db():
+    """Flush WAL pages into the main DB file before uploading."""
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn.execute("PRAGMA wal_checkpoint(FULL)")
+    conn.close()
+
+
+def sync_db_from_gcs() -> tuple[bool, str]:
+    """Download DB file from GCS if configured and object exists."""
+    if not DB_GCS_BUCKET:
+        return False, "GCS persistence disabled"
+
+    try:
+        client = storage.Client()
+        bucket = client.bucket(DB_GCS_BUCKET)
+        blob = bucket.blob(DB_GCS_BLOB)
+        if not blob.exists(client):
+            return False, "No existing DB object in GCS"
+
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        blob.download_to_filename(str(DB_PATH))
+        for p in _db_sidecar_paths():
+            if p.exists():
+                p.unlink()
+        return True, "DB downloaded from GCS"
+    except Exception as e:
+        return False, f"Failed to load DB from GCS: {e}"
+
+
+def sync_db_to_gcs() -> tuple[bool, str]:
+    """Upload local DB file to GCS for persistence."""
+    if not DB_GCS_BUCKET:
+        return False, "GCS persistence disabled"
+
+    if not DB_PATH.exists():
+        return False, "Local DB file not found"
+
+    with _DB_SYNC_LOCK:
+        try:
+            _checkpoint_db()
+            client = storage.Client()
+            bucket = client.bucket(DB_GCS_BUCKET)
+            blob = bucket.blob(DB_GCS_BLOB)
+            blob.upload_from_filename(str(DB_PATH))
+            return True, "DB uploaded to GCS"
+        except Exception as e:
+            return False, f"Failed to sync DB to GCS: {e}"
 
 
 def get_db() -> sqlite3.Connection:
@@ -107,7 +168,7 @@ def init_db():
     conn.close()
 
 
-def save_evaluation(problem: str, model: str) -> int:
+def save_evaluation(problem: str, model: str, sync_cloud: bool = True) -> int:
     conn = get_db()
     cur = conn.execute(
         "INSERT INTO evaluations (problem_text, model_name) VALUES (?, ?)",
@@ -116,10 +177,12 @@ def save_evaluation(problem: str, model: str) -> int:
     conn.commit()
     eval_id = cur.lastrowid
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
     return eval_id
 
 
-def save_paper(eval_id: int, paper: "Paper", avg_score: float) -> int:
+def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool = True) -> int:
     conn = get_db()
     cur = conn.execute(
         """INSERT INTO papers
@@ -131,10 +194,18 @@ def save_paper(eval_id: int, paper: "Paper", avg_score: float) -> int:
     conn.commit()
     paper_id = cur.lastrowid
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
     return paper_id
 
 
-def save_debate_round(paper_id: int, round_num: int, advocate: str, skeptic: str):
+def save_debate_round(
+    paper_id: int,
+    round_num: int,
+    advocate: str,
+    skeptic: str,
+    sync_cloud: bool = True,
+):
     conn = get_db()
     conn.execute(
         "INSERT INTO debate_rounds (paper_id, round_num, advocate_arg, skeptic_arg) VALUES (?, ?, ?, ?)",
@@ -142,10 +213,13 @@ def save_debate_round(paper_id: int, round_num: int, advocate: str, skeptic: str
     )
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
 def save_judge_verdict(paper_id: int, run: int, seed: int, score: int,
-                       verdict: str, reasons: list[str], suggested: str):
+                       verdict: str, reasons: list[str], suggested: str,
+                       sync_cloud: bool = True):
     conn = get_db()
     conn.execute(
         """INSERT INTO judge_verdicts
@@ -155,6 +229,8 @@ def save_judge_verdict(paper_id: int, run: int, seed: int, score: int,
     )
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
 def load_past_evaluations() -> list[dict]:
@@ -202,7 +278,7 @@ def load_paper_verdicts(paper_id: int) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def delete_evaluation(eval_id: int):
+def delete_evaluation(eval_id: int, sync_cloud: bool = True):
     """Delete an evaluation and all its papers, debates, and verdicts."""
     conn = get_db()
     paper_ids = [r['id'] for r in conn.execute(
@@ -215,9 +291,11 @@ def delete_evaluation(eval_id: int):
     conn.execute("DELETE FROM evaluations WHERE id = ?", (eval_id,))
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
-def delete_papers(paper_ids: list[int]):
+def delete_papers(paper_ids: list[int], sync_cloud: bool = True):
     """Delete specific papers and their debates/verdicts."""
     conn = get_db()
     for pid in paper_ids:
@@ -226,6 +304,8 @@ def delete_papers(paper_ids: list[int]):
         conn.execute("DELETE FROM papers WHERE id = ?", (pid,))
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
 def load_all_papers() -> list[dict]:
@@ -252,6 +332,7 @@ def create_recurring_schedule(
     min_score: int,
     max_concurrent: int,
     run_time: str,
+    sync_cloud: bool = True,
 ) -> int:
     conn = get_db()
     cur = conn.execute(
@@ -275,6 +356,8 @@ def create_recurring_schedule(
     conn.commit()
     schedule_id = cur.lastrowid
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
     return schedule_id
 
 
@@ -288,7 +371,7 @@ def load_recurring_schedules() -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def set_recurring_schedule_active(schedule_id: int, active: bool):
+def set_recurring_schedule_active(schedule_id: int, active: bool, sync_cloud: bool = True):
     conn = get_db()
     conn.execute(
         "UPDATE recurring_schedules SET is_active = ? WHERE id = ?",
@@ -296,13 +379,17 @@ def set_recurring_schedule_active(schedule_id: int, active: bool):
     )
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
-def delete_recurring_schedule(schedule_id: int):
+def delete_recurring_schedule(schedule_id: int, sync_cloud: bool = True):
     conn = get_db()
     conn.execute("DELETE FROM recurring_schedules WHERE id = ?", (schedule_id,))
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
 def update_schedule_last_run(
@@ -311,6 +398,7 @@ def update_schedule_last_run(
     status: str,
     message: str,
     eval_id: Optional[int],
+    sync_cloud: bool = True,
 ):
     conn = get_db()
     conn.execute(
@@ -332,6 +420,8 @@ def update_schedule_last_run(
     )
     conn.commit()
     conn.close()
+    if sync_cloud:
+        sync_db_to_gcs()
 
 
 def load_due_recurring_schedules(now: Optional[datetime] = None) -> list[dict]:
@@ -858,7 +948,7 @@ def _run_full_evaluation(
     if not papers:
         return None, [], "No papers found. Try adjusting keyword filters."
 
-    eval_id = save_evaluation(problem_statement, model_name)
+    eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
     results: list[DebateResult] = []
     progress = st.progress(0, text=f"{prefix}Evaluating papers...")
     live_status = st.empty()
@@ -916,9 +1006,15 @@ def _run_full_evaluation(
     live_status.empty()
 
     for r in results:
-        paper_id = save_paper(eval_id, r.paper, r.avg_score)
+        paper_id = save_paper(eval_id, r.paper, r.avg_score, sync_cloud=False)
         for idx, rnd in enumerate(r.rounds, 1):
-            save_debate_round(paper_id, idx, rnd.advocate_argument, rnd.skeptic_argument)
+            save_debate_round(
+                paper_id,
+                idx,
+                rnd.advocate_argument,
+                rnd.skeptic_argument,
+                sync_cloud=False,
+            )
         for jv in r.judge_verdicts:
             save_judge_verdict(
                 paper_id,
@@ -928,7 +1024,11 @@ def _run_full_evaluation(
                 jv.verdict,
                 jv.key_reasons,
                 jv.suggested_use,
+                sync_cloud=False,
             )
+
+    # Upload once after all writes to avoid per-row cloud sync overhead.
+    sync_db_to_gcs()
 
     results.sort(key=lambda r: r.avg_score, reverse=True)
     if save_to_session:
@@ -948,6 +1048,7 @@ def main():
         page_icon="📚",
         layout="wide",
     )
+    restored, restore_msg = sync_db_from_gcs()
     init_db()
 
     # ── Custom CSS ──
@@ -992,6 +1093,13 @@ def main():
             st.success("🔑 API key loaded from Secret Manager")
         else:
             st.warning("⚠️ No API key found. Set GEMINI_API_KEY in Secret Manager.")
+        if DB_GCS_BUCKET:
+            if restored:
+                st.caption(f"💾 Persistent DB loaded from GCS bucket `{DB_GCS_BUCKET}`")
+            else:
+                st.caption(f"💾 Persistent DB enabled: {restore_msg}")
+        else:
+            st.caption("💾 Persistent DB disabled (set PAPER_MATCHER_DB_BUCKET)")
         model_name = st.selectbox("Gemini Model", [
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
@@ -1140,7 +1248,7 @@ def main():
         # ── Execution ──
         if run_button:
             if not effective_api_key:
-                st.error("Please enter your Gemini API key in the sidebar.")
+                st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
             elif not problem_statement.strip():
                 st.error("Please describe your research problem.")
             else:
@@ -1163,7 +1271,7 @@ def main():
         # ── Fetch Only ──
         if fetch_only:
             if not effective_api_key:
-                st.error("Please enter your Gemini API key in the sidebar.")
+                st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
             elif not problem_statement.strip():
                 st.error("Please describe your research problem.")
             else:
@@ -1263,7 +1371,7 @@ def main():
                             if st.button("🔬 Evaluate", key=f"eval_{idx}",
                                          use_container_width=True):
                                 if not effective_api_key:
-                                    st.error("Please enter your Gemini API key.")
+                                    st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
                                 else:
                                     single_status = st.empty()
                                     def _single_cb(msg: str):
@@ -1284,16 +1392,28 @@ def main():
                                         )
                                     single_status.empty()
                                     # Save to DB
-                                    eval_id = save_evaluation(stored_problem, model_name)
-                                    paper_id = save_paper(eval_id, paper, result.avg_score)
+                                    eval_id = save_evaluation(stored_problem, model_name, sync_cloud=False)
+                                    paper_id = save_paper(eval_id, paper, result.avg_score, sync_cloud=False)
                                     for rd_idx, rnd in enumerate(result.rounds, 1):
-                                        save_debate_round(paper_id, rd_idx,
-                                                          rnd.advocate_argument,
-                                                          rnd.skeptic_argument)
+                                        save_debate_round(
+                                            paper_id,
+                                            rd_idx,
+                                            rnd.advocate_argument,
+                                            rnd.skeptic_argument,
+                                            sync_cloud=False,
+                                        )
                                     for jv in result.judge_verdicts:
-                                        save_judge_verdict(paper_id, jv.run, jv.seed,
-                                                           jv.relevance_score, jv.verdict,
-                                                           jv.key_reasons, jv.suggested_use)
+                                        save_judge_verdict(
+                                            paper_id,
+                                            jv.run,
+                                            jv.seed,
+                                            jv.relevance_score,
+                                            jv.verdict,
+                                            jv.key_reasons,
+                                            jv.suggested_use,
+                                            sync_cloud=False,
+                                        )
+                                    sync_db_to_gcs()
                                     single_results[paper_key] = result
                                     st.session_state["single_results"] = single_results
                                     st.rerun()
