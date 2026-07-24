@@ -81,6 +81,27 @@ def init_db():
             key_reasons     TEXT,
             suggested_use   TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS recurring_schedules (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            label           TEXT,
+            problem_text    TEXT NOT NULL,
+            model_name      TEXT NOT NULL,
+            fetch_mode      TEXT NOT NULL,
+            max_papers      INTEGER,
+            days_back       INTEGER,
+            keyword_filter  TEXT,
+            min_score       INTEGER DEFAULT 6,
+            max_concurrent  INTEGER DEFAULT 3,
+            run_time        TEXT NOT NULL,
+            is_active       INTEGER DEFAULT 1,
+            last_run_date   TEXT,
+            last_run_at     TEXT,
+            last_status     TEXT,
+            last_message    TEXT,
+            last_eval_id    INTEGER,
+            created_at      TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -215,6 +236,116 @@ def load_all_papers() -> list[dict]:
            FROM papers p
            JOIN evaluations e ON e.id = p.evaluation_id
            ORDER BY p.avg_score DESC"""
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def create_recurring_schedule(
+    label: str,
+    problem_text: str,
+    model_name: str,
+    fetch_mode: str,
+    max_papers: Optional[int],
+    days_back: Optional[int],
+    keyword_filter: str,
+    min_score: int,
+    max_concurrent: int,
+    run_time: str,
+) -> int:
+    conn = get_db()
+    cur = conn.execute(
+        """INSERT INTO recurring_schedules
+           (label, problem_text, model_name, fetch_mode, max_papers, days_back,
+            keyword_filter, min_score, max_concurrent, run_time)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (
+            label,
+            problem_text,
+            model_name,
+            fetch_mode,
+            max_papers,
+            days_back,
+            keyword_filter,
+            min_score,
+            max_concurrent,
+            run_time,
+        ),
+    )
+    conn.commit()
+    schedule_id = cur.lastrowid
+    conn.close()
+    return schedule_id
+
+
+def load_recurring_schedules() -> list[dict]:
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM recurring_schedules
+           ORDER BY is_active DESC, run_time ASC, id DESC"""
+    ).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def set_recurring_schedule_active(schedule_id: int, active: bool):
+    conn = get_db()
+    conn.execute(
+        "UPDATE recurring_schedules SET is_active = ? WHERE id = ?",
+        (1 if active else 0, schedule_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_recurring_schedule(schedule_id: int):
+    conn = get_db()
+    conn.execute("DELETE FROM recurring_schedules WHERE id = ?", (schedule_id,))
+    conn.commit()
+    conn.close()
+
+
+def update_schedule_last_run(
+    schedule_id: int,
+    run_date: str,
+    status: str,
+    message: str,
+    eval_id: Optional[int],
+):
+    conn = get_db()
+    conn.execute(
+        """UPDATE recurring_schedules
+           SET last_run_date = ?,
+               last_run_at = ?,
+               last_status = ?,
+               last_message = ?,
+               last_eval_id = ?
+           WHERE id = ?""",
+        (
+            run_date,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            status,
+            message,
+            eval_id,
+            schedule_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def load_due_recurring_schedules(now: Optional[datetime] = None) -> list[dict]:
+    now = now or datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    now_hhmm = now.strftime("%H:%M")
+    conn = get_db()
+    rows = conn.execute(
+        """SELECT * FROM recurring_schedules
+           WHERE is_active = 1
+             AND run_time <= ?
+             AND (last_run_date IS NULL OR last_run_date <> ?)
+           ORDER BY run_time ASC""",
+        (now_hhmm, today),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -690,6 +821,123 @@ def _build_export(results: list[DebateResult]) -> list[dict]:
     return export
 
 
+def _resolve_api_key(user_key: str) -> str:
+    """Prefer UI key; fallback to GEMINI_API_KEY for scheduled runs."""
+    return (user_key or "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+
+
+def _run_full_evaluation(
+    *,
+    api_key: str,
+    problem_statement: str,
+    model_name: str,
+    max_papers: Optional[int],
+    days_back: Optional[int],
+    keyword_filter: str,
+    max_concurrent: int,
+    min_score: int,
+    save_to_session: bool,
+    status_prefix: str = "",
+) -> tuple[Optional[int], list[DebateResult], Optional[str]]:
+    """Run the same end-to-end evaluation pipeline used by New Evaluation."""
+    prefix = f"{status_prefix} " if status_prefix else ""
+    with st.status(f"{prefix}📡 Fetching papers from arXiv CS.CL...", expanded=True) as status:
+        try:
+            papers = fetch_arxiv_papers(
+                max_results=max_papers,
+                search_query=keyword_filter,
+                days_back=days_back,
+            )
+            mode_label = (f"from the last **{days_back}** days"
+                          if days_back else f"(latest **{max_papers}**)")
+            st.write(f"✅ Fetched **{len(papers)}** papers {mode_label}")
+            status.update(label=f"{prefix}Fetched {len(papers)} papers", state="complete")
+        except Exception as e:
+            return None, [], f"Failed to fetch papers: {e}"
+
+    if not papers:
+        return None, [], "No papers found. Try adjusting keyword filters."
+
+    eval_id = save_evaluation(problem_statement, model_name)
+    results: list[DebateResult] = []
+    progress = st.progress(0, text=f"{prefix}Evaluating papers...")
+    live_status = st.empty()
+
+    paper_status: dict[str, str] = {}
+    status_lock = threading.Lock()
+
+    def _make_status_callback(title: str):
+        short = title[:60] + ("..." if len(title) > 60 else "")
+
+        def _cb(msg: str):
+            with status_lock:
+                paper_status[short] = msg
+
+        return _cb
+
+    def _refresh_status():
+        with status_lock:
+            snapshot = dict(paper_status)
+        if snapshot:
+            lines = [f"| {t} | {s} |" for t, s in snapshot.items()]
+            md = "| Paper | Status |\n|---|---|\n" + "\n".join(lines)
+            live_status.markdown(md)
+
+    def evaluate_paper(paper: Paper) -> DebateResult:
+        cb = _make_status_callback(paper.title)
+        cb("⏳ Queued")
+        try:
+            thread_client = genai.Client(api_key=api_key)
+            thread_engine = DebateEngine(client=thread_client, model_name=model_name)
+            return asyncio.run(
+                thread_engine.run_debate(paper, problem_statement, status_callback=cb))
+        except Exception as e:
+            cb(f"❌ Failed: {e}")
+            return DebateResult(
+                paper=paper,
+                combined_verdict=f"Evaluation failed: {e}",
+                avg_score=0.0,
+            )
+
+    completed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
+        futures = {executor.submit(evaluate_paper, p): p for p in papers}
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            results.append(result)
+            completed += 1
+            progress.progress(
+                completed / len(papers),
+                text=f"{prefix}Evaluated {completed}/{len(papers)} papers...",
+            )
+            _refresh_status()
+
+    progress.empty()
+    live_status.empty()
+
+    for r in results:
+        paper_id = save_paper(eval_id, r.paper, r.avg_score)
+        for idx, rnd in enumerate(r.rounds, 1):
+            save_debate_round(paper_id, idx, rnd.advocate_argument, rnd.skeptic_argument)
+        for jv in r.judge_verdicts:
+            save_judge_verdict(
+                paper_id,
+                jv.run,
+                jv.seed,
+                jv.relevance_score,
+                jv.verdict,
+                jv.key_reasons,
+                jv.suggested_use,
+            )
+
+    results.sort(key=lambda r: r.avg_score, reverse=True)
+    if save_to_session:
+        st.session_state["results"] = results
+        st.session_state["min_score"] = min_score
+
+    return eval_id, results, None
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Streamlit UI
 # ──────────────────────────────────────────────────────────────────────────────
@@ -737,8 +985,17 @@ def main():
     # ── Sidebar ──
     with st.sidebar:
         st.header("⚙️ Settings")
-        api_key = st.text_input("Google Gemini API Key", type="password",
-                                help="Get one at https://aistudio.google.com/apikey")
+        _env_key = os.environ.get("GEMINI_API_KEY", "")
+        api_key = st.text_input(
+            "Google Gemini API Key",
+            type="password",
+            value=_env_key,
+            help=(
+                "Pre-filled from GEMINI_API_KEY secret when running on Cloud Run. "
+                "Override here if needed. "
+                "Get one at https://aistudio.google.com/apikey"
+            ),
+        )
         model_name = st.selectbox("Gemini Model", [
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
@@ -772,8 +1029,53 @@ def main():
             "6. Everything stored in SQLite DB"
         )
 
+    effective_api_key = _resolve_api_key(api_key)
+    due_schedules = load_due_recurring_schedules()
+    if due_schedules:
+        st.divider()
+        st.subheader("⏰ Running Due Recurring Evaluations")
+        if not effective_api_key:
+            st.warning(
+                "Recurring evaluations are due, but no API key is available. "
+                "Set GEMINI_API_KEY in environment or enter a key in the sidebar."
+            )
+        else:
+            today = datetime.now().strftime("%Y-%m-%d")
+            for sch in due_schedules:
+                label = sch.get("label") or f"Schedule #{sch['id']}"
+                st.caption(f"Running {label} ({sch['run_time']})")
+                eval_id, results, err = _run_full_evaluation(
+                    api_key=effective_api_key,
+                    problem_statement=sch["problem_text"],
+                    model_name=sch["model_name"],
+                    max_papers=sch.get("max_papers"),
+                    days_back=sch.get("days_back"),
+                    keyword_filter=sch.get("keyword_filter") or "",
+                    max_concurrent=sch.get("max_concurrent") or 3,
+                    min_score=sch.get("min_score") or 6,
+                    save_to_session=False,
+                    status_prefix=f"[Recurring #{sch['id']}]",
+                )
+                if err:
+                    update_schedule_last_run(sch["id"], today, "failed", err, None)
+                    st.error(f"{label}: {err}")
+                else:
+                    update_schedule_last_run(
+                        sch["id"],
+                        today,
+                        "success",
+                        f"Saved {len(results)} papers",
+                        eval_id,
+                    )
+                    st.success(f"{label}: completed (eval #{eval_id}, {len(results)} papers)")
+            st.divider()
+
     # ── Page tabs ──
-    page_new, page_history = st.tabs(["🔬 New Evaluation", "🗄️ Past Evaluations"])
+    page_new, page_recurring, page_history = st.tabs([
+        "🔬 New Evaluation",
+        "⏰ Recurring Evaluations",
+        "🗄️ Past Evaluations",
+    ])
 
     # ══════════════════════════════════════════════════════════════════════════
     # NEW EVALUATION TAB
@@ -790,7 +1092,13 @@ def main():
             ),
         )
 
-        col1, col2, col3 = st.columns([1, 1, 1])
+        recurring_time_new = st.time_input(
+            "Recurring run time (server local time)",
+            value=datetime.now().replace(second=0, microsecond=0).time(),
+            key="new_eval_recurring_time",
+        )
+
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         with col1:
             run_button = st.button("🚀 Fetch & Evaluate All", type="primary",
                                    use_container_width=True)
@@ -803,111 +1111,62 @@ def main():
                 st.session_state.pop("fetched_papers", None)
                 st.session_state.pop("single_results", None)
                 st.rerun()
+        with col4:
+            add_recurring_from_new = st.button(
+                "⏰ Add to Recurring",
+                use_container_width=True,
+                help="Save this exact evaluation configuration as a daily recurring job.",
+            )
+
+        if add_recurring_from_new:
+            if not problem_statement.strip():
+                st.error("Please describe your research problem before adding a recurring schedule.")
+            else:
+                fetch_mode_key = "count" if fetch_mode == "By number of papers" else "days"
+                schedule_label = f"New Eval Schedule {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+                schedule_id = create_recurring_schedule(
+                    label=schedule_label,
+                    problem_text=problem_statement.strip(),
+                    model_name=model_name,
+                    fetch_mode=fetch_mode_key,
+                    max_papers=max_papers,
+                    days_back=days_back,
+                    keyword_filter=keyword_filter.strip(),
+                    min_score=min_score,
+                    max_concurrent=max_concurrent,
+                    run_time=recurring_time_new.strftime("%H:%M"),
+                )
+                st.success(
+                    f"Added recurring schedule #{schedule_id} at "
+                    f"{recurring_time_new.strftime('%H:%M')} (daily)."
+                )
 
         # ── Execution ──
         if run_button:
-            if not api_key:
+            if not effective_api_key:
                 st.error("Please enter your Gemini API key in the sidebar.")
             elif not problem_statement.strip():
                 st.error("Please describe your research problem.")
             else:
-                # Step 1 — Fetch papers
-                with st.status("📡 Fetching papers from arXiv CS.CL...", expanded=True) as status:
-                    try:
-                        papers = fetch_arxiv_papers(
-                            max_results=max_papers,
-                            search_query=keyword_filter,
-                            days_back=days_back,
-                        )
-                        mode_label = (f"from the last **{days_back}** days"
-                                      if days_back else f"(latest **{max_papers}**)")
-                        st.write(f"✅ Fetched **{len(papers)}** papers {mode_label}")
-                        status.update(label=f"Fetched {len(papers)} papers", state="complete")
-                    except Exception as e:
-                        st.error(f"Failed to fetch papers: {e}")
-                        papers = []
-
-                if not papers:
-                    st.warning("No papers found. Try adjusting keyword filters.")
+                eval_id, results, err = _run_full_evaluation(
+                    api_key=effective_api_key,
+                    problem_statement=problem_statement.strip(),
+                    model_name=model_name,
+                    max_papers=max_papers,
+                    days_back=days_back,
+                    keyword_filter=keyword_filter,
+                    max_concurrent=max_concurrent,
+                    min_score=min_score,
+                    save_to_session=True,
+                )
+                if err:
+                    st.warning(err)
                 else:
-                    # Create evaluation record
-                    eval_id = save_evaluation(problem_statement, model_name)
-
-                    # Step 2 — Multi-agent debate (async judges, threaded papers)
-                    results: list[DebateResult] = []
-                    progress = st.progress(0, text="Evaluating papers...")
-                    live_status = st.empty()
-
-                    # Thread-safe status tracking
-                    paper_status: dict[str, str] = {}
-                    status_lock = threading.Lock()
-
-                    def _make_status_callback(title: str):
-                        short = title[:60] + ("..." if len(title) > 60 else "")
-                        def _cb(msg: str):
-                            with status_lock:
-                                paper_status[short] = msg
-                        return _cb
-
-                    def _refresh_status():
-                        with status_lock:
-                            snapshot = dict(paper_status)
-                        if snapshot:
-                            lines = [f"| {t} | {s} |" for t, s in snapshot.items()]
-                            md = "| Paper | Status |\n|---|---|\n" + "\n".join(lines)
-                            live_status.markdown(md)
-
-                    def evaluate_paper(paper: Paper) -> DebateResult:
-                        """Each thread gets its own client + event loop."""
-                        cb = _make_status_callback(paper.title)
-                        cb("⏳ Queued")
-                        try:
-                            thread_client = genai.Client(api_key=api_key)
-                            thread_engine = DebateEngine(client=thread_client, model_name=model_name)
-                            return asyncio.run(
-                                thread_engine.run_debate(paper, problem_statement, status_callback=cb))
-                        except Exception as e:
-                            cb(f"❌ Failed: {e}")
-                            return DebateResult(
-                                paper=paper,
-                                combined_verdict=f"Evaluation failed: {e}",
-                                avg_score=0.0,
-                            )
-
-                    completed = 0
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
-                        futures = {executor.submit(evaluate_paper, p): p for p in papers}
-                        for future in concurrent.futures.as_completed(futures):
-                            result = future.result()
-                            results.append(result)
-                            completed += 1
-                            progress.progress(
-                                completed / len(papers),
-                                text=f"Evaluated {completed}/{len(papers)} papers...")
-                            _refresh_status()
-
-                    progress.empty()
-                    live_status.empty()
-
-                    # Step 3 — Save to DB
-                    for r in results:
-                        paper_id = save_paper(eval_id, r.paper, r.avg_score)
-                        for idx, rnd in enumerate(r.rounds, 1):
-                            save_debate_round(paper_id, idx,
-                                              rnd.advocate_argument, rnd.skeptic_argument)
-                        for jv in r.judge_verdicts:
-                            save_judge_verdict(paper_id, jv.run, jv.seed,
-                                               jv.relevance_score, jv.verdict,
-                                               jv.key_reasons, jv.suggested_use)
-
-                    results.sort(key=lambda r: r.avg_score, reverse=True)
-                    st.session_state["results"] = results
-                    st.session_state["min_score"] = min_score
                     st.success(f"✅ Saved {len(results)} papers to database (eval #{eval_id})")
 
         # ── Fetch Only ──
         if fetch_only:
-            if not api_key:
+            if not effective_api_key:
                 st.error("Please enter your Gemini API key in the sidebar.")
             elif not problem_statement.strip():
                 st.error("Please describe your research problem.")
@@ -1007,14 +1266,14 @@ def main():
                         else:
                             if st.button("🔬 Evaluate", key=f"eval_{idx}",
                                          use_container_width=True):
-                                if not api_key:
+                                if not effective_api_key:
                                     st.error("Please enter your Gemini API key.")
                                 else:
                                     single_status = st.empty()
                                     def _single_cb(msg: str):
                                         single_status.markdown(f"**Status:** {msg}")
                                     try:
-                                        eval_client = genai.Client(api_key=api_key)
+                                        eval_client = genai.Client(api_key=effective_api_key)
                                         eval_engine = DebateEngine(
                                             client=eval_client, model_name=model_name)
                                         result = asyncio.run(
@@ -1111,6 +1370,165 @@ def main():
                 file_name="arxiv_paper_matches.json",
                 mime="application/json",
             )
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # RECURRING EVALUATIONS TAB
+    # ══════════════════════════════════════════════════════════════════════════
+    with page_recurring:
+        st.subheader("⏰ Recurring Evaluations")
+        st.caption(
+            "Runs once per day at the configured time (server local time). "
+            "Due jobs run when this app is active."
+        )
+
+        st.markdown("#### ➕ Create Recurring Schedule")
+        with st.form("create_recurring_form"):
+            schedule_label = st.text_input(
+                "Schedule label",
+                value=f"Daily schedule {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            )
+            recurring_problem = st.text_area(
+                "Research problem",
+                value=st.session_state.get("problem_for_fetch", ""),
+                height=120,
+                placeholder="Describe the research problem for recurring evaluation.",
+            )
+            rec_model = st.selectbox(
+                "Gemini model",
+                [
+                    "gemini-3-pro-preview",
+                    "gemini-3-flash-preview",
+                    "gemini-2.5-pro",
+                    "gemini-2.5-flash",
+                    "gemini-2.0-flash",
+                ],
+                index=0,
+                key="rec_model_name",
+            )
+            rec_fetch_mode = st.radio(
+                "Fetch mode",
+                ["By number of papers", "By last N days"],
+                horizontal=True,
+                key="rec_fetch_mode",
+            )
+            if rec_fetch_mode == "By number of papers":
+                rec_max_papers = st.slider("Papers to fetch", 5, 100, 50, step=5, key="rec_max_papers")
+                rec_days_back = None
+            else:
+                rec_days_back = st.slider(
+                    "Papers from last N days",
+                    1,
+                    90,
+                    7,
+                    step=1,
+                    key="rec_days_back",
+                )
+                rec_max_papers = None
+            rec_keyword = st.text_input(
+                "Optional keyword filter",
+                placeholder="e.g. summarization, translation",
+                key="rec_keyword",
+            )
+            rec_min_score = st.slider("Min relevance score", 1, 10, 6, key="rec_min_score")
+            rec_max_concurrent = st.slider("Parallel evaluations", 1, 10, 3, key="rec_max_concurrent")
+            rec_run_time = st.time_input(
+                "Daily run time (server local time)",
+                value=datetime.now().replace(second=0, microsecond=0).time(),
+                key="rec_run_time",
+            )
+            create_schedule = st.form_submit_button("➕ Create Schedule", type="primary")
+
+        if create_schedule:
+            if not recurring_problem.strip():
+                st.error("Please provide a research problem for the recurring schedule.")
+            else:
+                rec_fetch_mode_key = "count" if rec_fetch_mode == "By number of papers" else "days"
+                schedule_id = create_recurring_schedule(
+                    label=schedule_label.strip() or f"Schedule {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                    problem_text=recurring_problem.strip(),
+                    model_name=rec_model,
+                    fetch_mode=rec_fetch_mode_key,
+                    max_papers=rec_max_papers,
+                    days_back=rec_days_back,
+                    keyword_filter=rec_keyword.strip(),
+                    min_score=rec_min_score,
+                    max_concurrent=rec_max_concurrent,
+                    run_time=rec_run_time.strftime("%H:%M"),
+                )
+                st.success(f"Created recurring schedule #{schedule_id}.")
+                st.rerun()
+
+        st.divider()
+        st.markdown("#### 📋 Existing Schedules")
+        schedules = load_recurring_schedules()
+        if not schedules:
+            st.info("No recurring schedules yet. Create one above or from New Evaluation.")
+        else:
+            for sch in schedules:
+                active_icon = "🟢" if sch.get("is_active") else "⏸️"
+                label = sch.get("label") or f"Schedule #{sch['id']}"
+                freq = (
+                    f"Latest {sch.get('max_papers')} papers"
+                    if sch.get("fetch_mode") == "count"
+                    else f"Last {sch.get('days_back')} day(s)"
+                )
+                with st.expander(
+                    f"{active_icon} #{sch['id']} • {label} • {sch['run_time']} daily",
+                    expanded=False,
+                ):
+                    st.markdown(f"**Model:** {sch.get('model_name')}")
+                    st.markdown(f"**Fetch:** {freq}")
+                    st.markdown(f"**Keyword filter:** {sch.get('keyword_filter') or 'None'}")
+                    st.markdown(f"**Parallel evaluations:** {sch.get('max_concurrent') or 3}")
+                    st.markdown(f"**Problem:**\n> {sch.get('problem_text', '')}")
+                    st.caption(
+                        f"Last run: {sch.get('last_run_at') or 'Never'} | "
+                        f"Status: {sch.get('last_status') or 'N/A'} | "
+                        f"Message: {sch.get('last_message') or 'N/A'}"
+                    )
+
+                    a1, a2, a3 = st.columns([1, 1, 1])
+                    with a1:
+                        toggle_label = "⏸️ Pause" if sch.get("is_active") else "▶️ Activate"
+                        if st.button(toggle_label, key=f"toggle_rec_{sch['id']}", use_container_width=True):
+                            set_recurring_schedule_active(sch["id"], not bool(sch.get("is_active")))
+                            st.rerun()
+                    with a2:
+                        if st.button("▶️ Run Now", key=f"run_rec_{sch['id']}", use_container_width=True):
+                            if not effective_api_key:
+                                st.error("Enter API key in sidebar or set GEMINI_API_KEY.")
+                            else:
+                                today = datetime.now().strftime("%Y-%m-%d")
+                                eval_id, results, err = _run_full_evaluation(
+                                    api_key=effective_api_key,
+                                    problem_statement=sch["problem_text"],
+                                    model_name=sch["model_name"],
+                                    max_papers=sch.get("max_papers"),
+                                    days_back=sch.get("days_back"),
+                                    keyword_filter=sch.get("keyword_filter") or "",
+                                    max_concurrent=sch.get("max_concurrent") or 3,
+                                    min_score=sch.get("min_score") or 6,
+                                    save_to_session=False,
+                                    status_prefix=f"[Recurring #{sch['id']}]",
+                                )
+                                if err:
+                                    update_schedule_last_run(sch["id"], today, "failed", err, None)
+                                    st.error(err)
+                                else:
+                                    update_schedule_last_run(
+                                        sch["id"],
+                                        today,
+                                        "success",
+                                        f"Saved {len(results)} papers",
+                                        eval_id,
+                                    )
+                                    st.success(f"Run complete. Created evaluation #{eval_id}.")
+                                    st.rerun()
+                    with a3:
+                        if st.button("🗑️ Delete", key=f"del_rec_{sch['id']}", use_container_width=True):
+                            delete_recurring_schedule(sch["id"])
+                            st.success(f"Deleted schedule #{sch['id']}.")
+                            st.rerun()
 
     # ══════════════════════════════════════════════════════════════════════════
     # PAST EVALUATIONS TAB

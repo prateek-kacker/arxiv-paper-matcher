@@ -32,3 +32,6 @@ arxiv_paper_matches.json
 *.db
 *.db-wal
 *.db-shm
+
+# Environment
+.env
