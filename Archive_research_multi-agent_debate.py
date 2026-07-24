@@ -1361,7 +1361,6 @@ def main():
                 if err:
                     st.warning(err)
                 else:
-                    st.success(f"✅ Saved {len(results)} papers to database (eval #{eval_id})")
                     st.session_state["last_eval_id"] = eval_id
                     st.session_state["last_eval_problem"] = problem_statement.strip()
                     st.session_state["last_eval_model"] = model_name
@@ -1376,9 +1375,18 @@ def main():
                             token=webhook_token,
                         )
                         if ok:
-                            st.success(f"📤 {msg}")
+                            st.session_state["_post_msg"] = ("success", f"📤 {msg}")
                         else:
-                            st.warning(f"📤 {msg}")
+                            st.session_state["_post_msg"] = ("warning", f"📤 {msg}")
+                    st.rerun()
+
+        # ── Show post-webhook message after rerun ──
+        if "_post_msg" in st.session_state:
+            kind, msg = st.session_state.pop("_post_msg")
+            if kind == "success":
+                st.success(msg)
+            else:
+                st.warning(msg)
 
         # ── Fetch Only ──
         if fetch_only:
