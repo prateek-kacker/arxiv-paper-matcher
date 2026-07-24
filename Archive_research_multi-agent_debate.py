@@ -1003,8 +1003,10 @@ def _run_full_evaluation(
 
     eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
     results: list[DebateResult] = []
+    stage_header = st.empty()
     progress = st.progress(0, text=f"{prefix}Evaluating papers...")
     live_status = st.empty()
+    stage_header.info(f"**Stage 1 of 3 — Evaluating papers** &nbsp;|&nbsp; 0 / {len(papers)} complete")
 
     paper_status: dict[str, str] = {}
     status_lock = threading.Lock()
@@ -1053,8 +1055,13 @@ def _run_full_evaluation(
                 completed / len(papers),
                 text=f"{prefix}Evaluated {completed}/{len(papers)} papers...",
             )
+            stage_header.info(
+                f"**Stage 1 of 3 — Evaluating papers** &nbsp;|&nbsp; "
+                f"{completed} / {len(papers)} complete"
+            )
             _refresh_status()
 
+    stage_header.info(f"**Stage 2 of 3 — Saving results to database** &nbsp;|&nbsp; {len(results)} papers evaluated")
     progress.empty()
     live_status.empty()
 
@@ -1081,7 +1088,9 @@ def _run_full_evaluation(
             )
 
     # Upload once after all writes to avoid per-row cloud sync overhead.
+    stage_header.info("**Stage 3 of 3 — Syncing to cloud storage...**")
     sync_db_to_gcs()
+    stage_header.empty()
 
     results.sort(key=lambda r: r.avg_score, reverse=True)
     if save_to_session:
