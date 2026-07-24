@@ -1,0 +1,13 @@
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.git
+.gitignore
+.venv
+venv
+env
+paper_matcher.db
+paper_matcher.db-wal
+paper_matcher.db-shm
+.streamlit/secrets.toml

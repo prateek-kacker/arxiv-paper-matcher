@@ -12,6 +12,7 @@ import arxiv
 from google import genai
 from google.genai import types
 import json
+import os
 import asyncio
 import random
 import sqlite3
@@ -27,7 +28,7 @@ import pandas as pd
 # Database
 # ──────────────────────────────────────────────────────────────────────────────
 
-DB_PATH = Path(__file__).parent / "paper_matcher.db"
+DB_PATH = Path(os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher.db")))
 
 
 def get_db() -> sqlite3.Connection:
@@ -217,6 +218,31 @@ def load_all_papers() -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def find_matching_past_papers(urls: list[str]) -> dict[str, list[dict]]:
+    """Find papers in the DB whose URL matches any of the given URLs.
+
+    Returns a dict mapping URL -> list of past paper records (with eval info).
+    """
+    if not urls:
+        return {}
+    conn = get_db()
+    placeholders = ",".join("?" for _ in urls)
+    rows = conn.execute(
+        f"""SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date
+            FROM papers p
+            JOIN evaluations e ON e.id = p.evaluation_id
+            WHERE p.url IN ({placeholders})
+            ORDER BY p.avg_score DESC""",
+        urls,
+    ).fetchall()
+    conn.close()
+    matches: dict[str, list[dict]] = {}
+    for r in rows:
+        d = dict(r)
+        matches.setdefault(d['url'], []).append(d)
+    return matches
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -503,8 +529,11 @@ def _judge_chips_html(verdicts: list[JudgeVerdict]) -> str:
     return " ".join(chips)
 
 
-def _render_results_list(results: list[DebateResult], show_top_badge: bool = False, key_prefix: str = "all"):
+def _render_results_list(results: list[DebateResult], show_top_badge: bool = False,
+                         key_prefix: str = "all", past_matches: dict | None = None):
     """Render a list of paper results with advocate/skeptic + judge panel."""
+    if past_matches is None:
+        past_matches = {}
     for idx, r in enumerate(results):
         score_class = (
             "score-high" if r.avg_score >= 7
@@ -512,15 +541,36 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
             else "score-low"
         )
         badge = "⭐ " if show_top_badge else ""
+        is_match = r.paper.url in past_matches
+        card_class = "paper-card-match" if is_match else "paper-card"
+        match_html = " <span class='match-badge'>🔄 Previously Evaluated</span>" if is_match else ""
 
         st.markdown(
-            f"<div class='paper-card'>"
+            f"<div class='{card_class}'>"
             f"<span class='{score_class}'>{badge}{r.avg_score}/10</span>"
-            f"&nbsp;&nbsp;<strong>{r.paper.title}</strong><br/>"
+            f"&nbsp;&nbsp;<strong>{r.paper.title}</strong>{match_html}<br/>"
             f"<small>👤 {r.paper.authors} &nbsp;|&nbsp; 📅 {r.paper.published}</small>"
             f"</div>",
             unsafe_allow_html=True,
         )
+
+        # Show past evaluation comparison if matched
+        if is_match:
+            past_records = past_matches[r.paper.url]
+            with st.expander(f"🔄 Past Evaluation ({len(past_records)} match{'es' if len(past_records) > 1 else ''})"):
+                for pr in past_records:
+                    past_score = pr.get('avg_score', 0)
+                    past_icon = "🟢" if past_score >= 7 else "🟡" if past_score >= 4 else "🔴"
+                    st.markdown(
+                        f"**Past research problem:**\n> {pr.get('problem_text', 'N/A')[:200]}"
+                        f"{'...' if len(pr.get('problem_text', '')) > 200 else ''}"
+                    )
+                    st.markdown(
+                        f"**Past score:** {past_icon} **{past_score}/10** &nbsp;|&nbsp; "
+                        f"**Model:** {pr.get('model_name', 'N/A')} &nbsp;|&nbsp; "
+                        f"**Date:** {(pr.get('eval_date') or '')[:10]}"
+                    )
+                    st.divider()
 
         # Abstract and paper link
         st.write(r.paper.abstract)
@@ -668,6 +718,15 @@ def main():
     .paper-card {
         border: 1px solid #333; border-radius: 10px;
         padding: 1.2em; margin-bottom: 1em;
+    }
+    .paper-card-match {
+        border: 2px solid #ff9800; border-radius: 10px;
+        padding: 1.2em; margin-bottom: 1em;
+        background: #ff980010;
+    }
+    .match-badge {
+        display: inline-block; padding: 2px 10px; border-radius: 12px;
+        background: #ff980033; color: #ff9800; font-weight: 600; font-size: 0.85em;
     }
     </style>
     """, unsafe_allow_html=True)
@@ -880,19 +939,66 @@ def main():
             single_results: dict[str, DebateResult] = st.session_state.get("single_results", {})
             stored_problem = st.session_state.get("problem_for_fetch", problem_statement)
 
+            # Detect papers that already exist in past evaluations
+            past_matches = find_matching_past_papers([p.url for p in fetched])
+            match_count = sum(1 for p in fetched if p.url in past_matches)
+
             st.divider()
             st.subheader(f"📄 Fetched Papers ({len(fetched)})")
+            if match_count:
+                st.info(
+                    f"🔄 **{match_count}** paper(s) found in past evaluations "
+                    f"(highlighted in orange). You can remove them before evaluating."
+                )
             st.caption("Click **Evaluate** on any paper to run the multi-agent debate.")
 
             for idx, paper in enumerate(fetched):
                 paper_key = f"{paper.title}|{paper.url}"
                 already_evaluated = paper_key in single_results
+                is_match = paper.url in past_matches
 
                 with st.container():
+                    # Title row with match badge
+                    card_class = "paper-card-match" if is_match else "paper-card"
+                    match_html = " <span class='match-badge'>🔄 Previously Evaluated</span>" if is_match else ""
+                    st.markdown(
+                        f"<div class='{card_class}'>"
+                        f"<strong>{paper.title}</strong>{match_html}<br/>"
+                        f"<small>👤 {paper.authors} &nbsp;|&nbsp; 📅 {paper.published}</small>"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    # Show past evaluation info if matched
+                    if is_match:
+                        past_records = past_matches[paper.url]
+                        with st.expander(f"🔄 Past Evaluation ({len(past_records)} match{'es' if len(past_records) > 1 else ''})", expanded=False):
+                            st.markdown(f"**Current research problem:**\n> {stored_problem[:200]}{'...' if len(stored_problem) > 200 else ''}")
+                            st.divider()
+                            for pr in past_records:
+                                past_score = pr.get('avg_score', 0)
+                                past_icon = "🟢" if past_score >= 7 else "🟡" if past_score >= 4 else "🔴"
+                                st.markdown(
+                                    f"**Past research problem:**\n> {pr.get('problem_text', 'N/A')[:200]}"
+                                    f"{'...' if len(pr.get('problem_text', '')) > 200 else ''}"
+                                )
+                                st.markdown(
+                                    f"**Past score:** {past_icon} **{past_score}/10** &nbsp;|&nbsp; "
+                                    f"**Model:** {pr.get('model_name', 'N/A')} &nbsp;|&nbsp; "
+                                    f"**Date:** {(pr.get('eval_date') or '')[:10]}"
+                                )
+                                st.divider()
+                        # Remove button
+                        if st.button("🗑️ Remove from list", key=f"remove_{idx}",
+                                     use_container_width=False):
+                            st.session_state["fetched_papers"] = [
+                                p for i, p in enumerate(fetched) if i != idx
+                            ]
+                            st.rerun()
+
                     col_info, col_btn = st.columns([4, 1])
                     with col_info:
-                        st.markdown(f"**{paper.title}**")
-                        st.caption(f"👤 {paper.authors}  |  📅 {paper.published}")
+                        pass  # Title already shown above
                     with col_btn:
                         if already_evaluated:
                             r = single_results[paper_key]
@@ -961,24 +1067,33 @@ def main():
             mid = [r for r in results if 4 <= r.avg_score < 7]
             low = [r for r in results if r.avg_score < 4]
 
+            # Detect matches with past evaluations
+            result_urls = [r.paper.url for r in results]
+            results_past_matches = find_matching_past_papers(result_urls)
+            match_count = sum(1 for r in results if r.paper.url in results_past_matches)
+
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Papers", len(results))
             m2.metric("🟢 Highly Relevant (7-10)", len(high))
             m3.metric("🟡 Moderate (4-6)", len(mid))
             m4.metric("🔴 Low Relevance (1-3)", len(low))
 
+            if match_count:
+                st.info(f"🔄 **{match_count}** paper(s) were previously evaluated (highlighted in orange).")
+
             tab_all, tab_top, tab_debate = st.tabs([
                 "📋 All Results", "⭐ Top Matches", "🗣️ Debate Details"
             ])
 
             with tab_all:
-                _render_results_list(results, key_prefix="all")
+                _render_results_list(results, key_prefix="all", past_matches=results_past_matches)
 
             with tab_top:
                 top_results = [r for r in results if r.avg_score >= ms]
                 if not top_results:
                     st.info(f"No papers scored ≥ {ms}. Try lowering the threshold.")
-                _render_results_list(top_results, show_top_badge=True, key_prefix="top")
+                _render_results_list(top_results, show_top_badge=True, key_prefix="top",
+                                     past_matches=results_past_matches)
 
             with tab_debate:
                 st.info("Expand any paper to see the full debate transcript and all 5 judge scores.")
