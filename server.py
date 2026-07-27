@@ -25,6 +25,7 @@ from core_engine import (
     sync_db_to_cloud,
     init_db,
     save_evaluation,
+    update_evaluation_progress,
     save_paper,
     save_debate_round,
     save_judge_verdict,
@@ -293,6 +294,92 @@ async def api_evaluate_stream(request: Request):
         }
 
     return EventSourceResponse(event_generator())
+
+
+@app.post("/api/evaluate/background")
+async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks):
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip() or data.get("api_key", "").strip()
+    problem_statement = data.get("problem_statement", "").strip()
+    model_name = data.get("model_name", "gemini-3-pro-preview")
+    max_papers = data.get("max_papers") or 10
+    days_back = data.get("days_back")
+    keyword_filter = data.get("keyword_filter", "").strip()
+    max_concurrent = int(data.get("max_concurrent", 3))
+    paper_source = data.get("paper_source", "arxiv")
+    acl_track = data.get("acl_track", "all")
+
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Gemini API key is required.")
+    if not problem_statement:
+        raise HTTPException(status_code=400, detail="Research problem description is required.")
+
+    # Fetch papers
+    try:
+        if paper_source == "acl":
+            papers = fetch_acl_papers(max_results=max_papers, search_query=keyword_filter, volume_filter=acl_track)
+        else:
+            papers = fetch_arxiv_papers(max_results=max_papers, search_query=keyword_filter, days_back=days_back)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch papers: {e}")
+
+    if not papers:
+        raise HTTPException(status_code=400, detail=f"No {paper_source.upper()} papers found matching filters.")
+
+    # Create background evaluation record in SQLite
+    eval_id = save_evaluation(problem=problem_statement, model=model_name, status="RUNNING", total=len(papers))
+
+    # Add async background worker
+    background_tasks.add_task(
+        run_background_eval_task,
+        eval_id,
+        api_key,
+        problem_statement,
+        model_name,
+        papers,
+        max_concurrent,
+    )
+
+    return {
+        "status": "success",
+        "eval_id": eval_id,
+        "total_papers": len(papers),
+        "message": f"Background evaluation #{eval_id} started for {len(papers)} papers."
+    }
+
+
+async def run_background_eval_task(eval_id: int, api_key: str, problem: str, model: str, papers: list, max_concurrent: int):
+    try:
+        from google import genai
+        c = genai.Client(api_key=api_key)
+        engine = DebateEngine(client=c, model_name=model)
+        completed_count = 0
+
+        sem = asyncio.Semaphore(max_concurrent)
+
+        async def eval_one(paper):
+            nonlocal completed_count
+            async with sem:
+                try:
+                    result = await engine.evaluate_paper_async(paper, problem)
+                    p_id = save_paper(eval_id, result.paper, result.avg_score, sync_cloud=False)
+                    for r_idx, r in enumerate(result.rounds, start=1):
+                        save_debate_round(p_id, r_idx, r.advocate_argument, r.skeptic_argument, sync_cloud=False)
+                    for v in result.judge_verdicts:
+                        save_judge_verdict(p_id, v.run, v.seed, v.relevance_score, v.verdict, v.key_reasons, v.suggested_use, sync_cloud=False)
+                except Exception as e:
+                    print(f"[Background Eval Worker error on '{paper.title}'] {e}", flush=True)
+
+                completed_count += 1
+                update_evaluation_progress(eval_id, completed=completed_count, status="RUNNING", sync_cloud=False)
+
+        tasks = [eval_one(p) for p in papers]
+        await asyncio.gather(*tasks)
+
+        # Finalize and sync DB to cloud
+        update_evaluation_progress(eval_id, completed=len(papers), status="COMPLETED", sync_cloud=True)
+    except Exception as err:
+        print(f"[Background Eval Worker Failed #{eval_id}] {err}", flush=True)
+        update_evaluation_progress(eval_id, completed=completed_count, status="FAILED", sync_cloud=True)
 
 
 # ──────────────────────────────────────────────────────────────────────────────

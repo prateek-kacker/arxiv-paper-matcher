@@ -135,6 +135,9 @@ def init_db():
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
             problem_text    TEXT NOT NULL,
             model_name      TEXT NOT NULL,
+            status          TEXT DEFAULT 'COMPLETED',
+            total_papers    INTEGER DEFAULT 0,
+            completed_papers INTEGER DEFAULT 0,
             created_at      TEXT DEFAULT (datetime('now'))
         );
 
@@ -204,14 +207,27 @@ def init_db():
         );
     """)
     conn.commit()
+
+    # Migration columns for background evaluation tracking
+    for col_def in [
+        "status TEXT DEFAULT 'COMPLETED'",
+        "total_papers INTEGER DEFAULT 0",
+        "completed_papers INTEGER DEFAULT 0",
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE evaluations ADD COLUMN {col_def}")
+            conn.commit()
+        except Exception:
+            pass
+
     conn.close()
 
 
-def save_evaluation(problem: str, model: str, sync_cloud: bool = True) -> int:
+def save_evaluation(problem: str, model: str, status: str = 'COMPLETED', total: int = 0, sync_cloud: bool = True) -> int:
     conn = get_db()
     cur = conn.execute(
-        "INSERT INTO evaluations (problem_text, model_name) VALUES (?, ?)",
-        (problem, model),
+        "INSERT INTO evaluations (problem_text, model_name, status, total_papers, completed_papers) VALUES (?, ?, ?, ?, 0)",
+        (problem, model, status, total),
     )
     conn.commit()
     eval_id = cur.lastrowid
@@ -219,6 +235,24 @@ def save_evaluation(problem: str, model: str, sync_cloud: bool = True) -> int:
     if sync_cloud:
         sync_db_to_cloud()
     return eval_id
+
+
+def update_evaluation_progress(eval_id: int, completed: int, total: Optional[int] = None, status: Optional[str] = None, sync_cloud: bool = True):
+    conn = get_db()
+    updates = ["completed_papers = ?"]
+    params: list = [completed]
+    if total is not None:
+        updates.append("total_papers = ?")
+        params.append(total)
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    params.append(eval_id)
+    conn.execute(f"UPDATE evaluations SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+    if sync_cloud:
+        sync_db_to_cloud()
 
 
 def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool = True) -> int:
@@ -275,7 +309,11 @@ def save_judge_verdict(paper_id: int, run: int, seed: int, score: int,
 def load_past_evaluations() -> list[dict]:
     conn = get_db()
     rows = conn.execute(
-        """SELECT e.id, e.problem_text, e.model_name, e.created_at,
+        """SELECT e.id, e.problem_text, e.model_name,
+                  COALESCE(e.status, 'COMPLETED') AS status,
+                  COALESCE(e.total_papers, 0) AS total_papers,
+                  COALESCE(e.completed_papers, COUNT(p.id)) AS completed_papers,
+                  e.created_at,
                   COUNT(p.id) AS paper_count,
                   ROUND(AVG(p.avg_score), 1) AS overall_avg
            FROM evaluations e

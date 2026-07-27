@@ -119,7 +119,14 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       // Evaluation Action Buttons
-      document.getElementById('btn-run-all').addEventListener('click', () => this.startLiveStreamEvaluation());
+      document.getElementById('btn-run-all').addEventListener('click', () => {
+        const execMode = document.querySelector('input[name="execmode"]:checked')?.value || 'live';
+        if (execMode === 'background') {
+          this.startBackgroundEvaluation();
+        } else {
+          this.startLiveStreamEvaluation();
+        }
+      });
 
       document.getElementById('btn-stop-eval').addEventListener('click', () => {
         if (this.abortController) {
@@ -382,6 +389,52 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     },
 
+    // ── Background Evaluation ──
+    async startBackgroundEvaluation() {
+      const problem = document.getElementById('problem-statement').value.trim();
+      if (!problem) return alert('Please describe your research problem.');
+
+      const model = document.getElementById('model-name').value;
+      const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
+      const aclTrack = document.getElementById('acl-track')?.value || 'all';
+
+      const fetchMode = document.querySelector('input[name="fetchmode"]:checked').value;
+      const maxPapers = fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null;
+      const daysBack = fetchMode === 'days' ? parseInt(document.getElementById('days-back').value) : null;
+      const keyword = document.getElementById('keyword-filter').value.trim();
+      const concurrent = parseInt(document.getElementById('max-concurrent').value);
+
+      try {
+        const response = await fetch('/api/evaluate/background', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            problem_statement: problem,
+            model_name: model,
+            paper_source: paperSource,
+            acl_track: aclTrack,
+            max_papers: maxPapers,
+            days_back: daysBack,
+            keyword_filter: keyword,
+            max_concurrent: concurrent,
+          }),
+        });
+
+        const data = await response.json();
+        if (!response.ok) {
+          alert('Error starting background evaluation: ' + (data.detail || data.error || 'Unknown error'));
+          return;
+        }
+
+        alert(`🚀 Background Evaluation #${data.eval_id} launched for ${data.total_papers} papers!\n\nYou can track live progress in the History tab at any time.`);
+        const historyTab = document.querySelector('.tab-btn[data-tab="tab-history"]');
+        if (historyTab) historyTab.click();
+        this.loadHistory();
+      } catch (err) {
+        alert('Failed to launch background evaluation: ' + err.message);
+      }
+    },
+
     // ── Results Dashboard ──
     renderResultsDashboard() {
       const results = this.currentResults;
@@ -596,6 +649,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         this.renderHistoryPapersTable();
         this.renderHistory();
+
+        // Auto-poll History if any background evaluation is currently RUNNING
+        const hasRunning = this.pastEvaluations.some(ev => ev.status === 'RUNNING');
+        if (hasRunning) {
+          if (this.historyPollTimer) clearTimeout(this.historyPollTimer);
+          this.historyPollTimer = setTimeout(() => this.loadHistory(), 3500);
+        }
       } catch (e) { console.error('History error:', e); }
     },
 
@@ -891,15 +951,27 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       list.forEach(ev => {
+        const isRunning = ev.status === 'RUNNING';
+        const isFailed = ev.status === 'FAILED';
+        const statusBadge = isRunning
+          ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">🔄 RUNNING (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
+          : isFailed
+          ? `<span class="badge" style="background:var(--color-accent);color:#fff;font-weight:700;padding:3px 8px;border-radius:12px">❌ FAILED</span>`
+          : `<span class="badge" style="background:var(--color-emerald-500);color:#fff;font-weight:700;padding:3px 8px;border-radius:12px">✅ COMPLETED</span>`;
+
         const card = document.createElement('div');
         card.className = 'card';
+        if (isRunning) card.style.borderLeft = '4px solid var(--color-amber-500)';
         card.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center">
-            <div style="font-weight:800;font-size:15px">Eval #${ev.id} — Overall: ${ev.overall_avg || 0}/10</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div style="font-weight:800;font-size:15px">Eval #${ev.id} — Overall: ${ev.overall_avg || 0}/10</div>
+              ${statusBadge}
+            </div>
             <button class="btn btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--color-accent)">Delete Run</button>
           </div>
-          <div style="font-size:13.5px"><strong>Problem:</strong> ${ev.problem_text}</div>
-          <div style="font-size:12px;opacity:.6">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers Evaluated: ${ev.paper_count}</div>
+          <div style="font-size:13.5px;margin-top:4px"><strong>Problem:</strong> ${ev.problem_text}</div>
+          <div style="font-size:12px;opacity:.6;margin-top:2px">Model: ${ev.model_name} | Date: ${ev.created_at} | Progress: ${ev.completed_papers || ev.paper_count}/${ev.total_papers || ev.paper_count} papers</div>
 
           <details style="margin-top:8px" class="past-eval-details" data-id="${ev.id}">
             <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ View Evaluated Papers &amp; Judge Transcripts for Eval #${ev.id}</summary>

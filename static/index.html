@@ -128,6 +128,20 @@
         </div>
 
         <div class="field">
+          <label>Execution Mode</label>
+          <div class="seg" style="width:100%">
+            <label class="seg-opt" style="flex:1;justify-content:center">
+              <input type="radio" name="execmode" value="live" checked />
+              ⚡ Live Interactive Stream
+            </label>
+            <label class="seg-opt" style="flex:1;justify-content:center">
+              <input type="radio" name="execmode" value="background" />
+              🔄 Run in Background
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
           <label>Parallel evaluations — <span id="val-max-concurrent">3</span></label>
           <input type="range" id="max-concurrent" min="1" max="10" step="1" value="3" style="width:100%" />
         </div>
