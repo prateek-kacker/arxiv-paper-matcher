@@ -30,6 +30,13 @@ document.addEventListener('DOMContentLoaded', () => {
           const paneId = tab.getAttribute('data-tab');
           const pane = document.getElementById(paneId);
           if (pane) pane.classList.add('active');
+
+          // Refresh data on tab switch
+          if (paneId === 'tab-history') {
+            this.loadHistory();
+          } else if (paneId === 'tab-recurring') {
+            this.loadSchedules();
+          }
         });
       });
 
@@ -120,6 +127,12 @@ document.addEventListener('DOMContentLoaded', () => {
         a.download = 'arxiv_paper_matches.json';
         a.click();
       });
+
+      // History Search & Filter Inputs
+      const historySearch = document.getElementById('history-search');
+      const historyFilterScore = document.getElementById('history-filter-score');
+      if (historySearch) historySearch.addEventListener('input', () => this.renderHistory());
+      if (historyFilterScore) historyFilterScore.addEventListener('change', () => this.renderHistory());
 
       // Create Schedule Form
       document.getElementById('form-schedule').addEventListener('submit', async (e) => {
@@ -258,6 +271,8 @@ document.addEventListener('DOMContentLoaded', () => {
         progressStage.textContent = `Completed evaluation of ${data.total_evaluated} papers!`;
         progressFill.style.width = '100%';
         this.renderResultsDashboard();
+        // Immediately reload history so newly stored evaluation appears
+        this.loadHistory();
       }
     },
 
@@ -446,12 +461,33 @@ document.addEventListener('DOMContentLoaded', () => {
       const container = document.getElementById('history-list');
       container.innerHTML = '';
 
-      if (!this.pastEvaluations.length) {
-        container.innerHTML = '<p style="opacity:.6">No past evaluations stored.</p>';
+      const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
+      const scoreFilter = document.getElementById('history-filter-score')?.value || 'all';
+
+      let list = [...this.pastEvaluations];
+
+      if (searchVal) {
+        list = list.filter(ev =>
+          (ev.problem_text || '').toLowerCase().includes(searchVal) ||
+          (ev.model_name || '').toLowerCase().includes(searchVal) ||
+          String(ev.id).includes(searchVal)
+        );
+      }
+
+      if (scoreFilter === 'high') {
+        list = list.filter(ev => (ev.overall_avg || 0) >= 7);
+      } else if (scoreFilter === 'mid') {
+        list = list.filter(ev => (ev.overall_avg || 0) >= 4 && (ev.overall_avg || 0) < 7);
+      } else if (scoreFilter === 'low') {
+        list = list.filter(ev => (ev.overall_avg || 0) < 4);
+      }
+
+      if (!list.length) {
+        container.innerHTML = '<p style="opacity:.6">No past evaluations match your filter.</p>';
         return;
       }
 
-      this.pastEvaluations.forEach(ev => {
+      list.forEach(ev => {
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
@@ -459,12 +495,20 @@ document.addEventListener('DOMContentLoaded', () => {
             <div style="font-weight:800;font-size:15px">Eval #${ev.id} — Overall: ${ev.overall_avg || 0}/10</div>
             <button class="btn btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--color-accent)">Delete</button>
           </div>
-          <div style="font-size:13.5px">${ev.problem_text}</div>
-          <div style="font-size:12px;opacity:.6">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers: ${ev.paper_count}</div>
+          <div style="font-size:13.5px"><strong>Problem:</strong> ${ev.problem_text}</div>
+          <div style="font-size:12px;opacity:.6">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers Evaluated: ${ev.paper_count}</div>
+
+          <details style="margin-top:8px" class="past-eval-details" data-id="${ev.id}">
+            <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ View Evaluated Papers for Eval #${ev.id}</summary>
+            <div class="past-eval-papers-container" style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
+              <p style="font-size:12px;opacity:.6">Loading papers...</p>
+            </div>
+          </details>
         `;
         container.appendChild(card);
       });
 
+      // Bind delete buttons
       container.querySelectorAll('.btn-del-eval').forEach(b => b.addEventListener('click', async e => {
         const id = e.target.getAttribute('data-id');
         if (confirm(`Delete evaluation #${id}?`)) {
@@ -472,6 +516,49 @@ document.addEventListener('DOMContentLoaded', () => {
           this.loadHistory();
         }
       }));
+
+      // Bind lazy loading of past evaluation papers when accordion is opened
+      container.querySelectorAll('.past-eval-details').forEach(details => {
+        details.addEventListener('toggle', async (e) => {
+          if (details.open) {
+            const evalId = details.getAttribute('data-id');
+            const papersContainer = details.querySelector('.past-eval-papers-container');
+            if (papersContainer && !papersContainer.hasAttribute('data-loaded')) {
+              try {
+                const res = await fetch(`/api/evaluations/${evalId}`);
+                const data = await res.json();
+                papersContainer.setAttribute('data-loaded', 'true');
+                papersContainer.innerHTML = '';
+
+                if (!data.papers || !data.papers.length) {
+                  papersContainer.innerHTML = '<p style="font-size:12px;opacity:.6">No papers stored for this evaluation.</p>';
+                  return;
+                }
+
+                data.papers.forEach(p => {
+                  const pCard = document.createElement('div');
+                  const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
+                  pCard.className = 'card';
+                  pCard.style.background = 'var(--color-bg)';
+                  pCard.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                      <div>
+                        <strong style="font-size:14px">${p.title}</strong>
+                        <div style="font-size:11px;opacity:.6">👤 ${p.authors || 'Unknown'} · 📅 ${p.published || ''}</div>
+                      </div>
+                      <span class="score-badge ${scoreClass}">${p.avg_score}/10</span>
+                    </div>
+                    <a href="${p.url}" target="_blank" class="btn btn-ghost" style="font-size:12px;align-self:flex-start">Open Paper &rarr;</a>
+                  `;
+                  papersContainer.appendChild(pCard);
+                });
+              } catch (err) {
+                papersContainer.innerHTML = `<p style="font-size:12px;color:var(--color-accent)">Failed to load papers: ${err.message}</p>`;
+              }
+            }
+          }
+        });
+      });
     },
   };
 
