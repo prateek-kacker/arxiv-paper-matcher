@@ -333,8 +333,42 @@ def load_all_papers() -> list[dict]:
            JOIN evaluations e ON e.id = p.evaluation_id
            ORDER BY p.avg_score DESC"""
     ).fetchall()
+    papers = [dict(r) for r in rows]
+    for p in papers:
+        pid = p["id"]
+        verdicts = conn.execute("SELECT relevance_score, judge_run FROM judge_verdicts WHERE paper_id = ? ORDER BY judge_run", (pid,)).fetchall()
+        p["judge_scores"] = [{"run": v["judge_run"], "score": v["relevance_score"]} for v in verdicts]
     conn.close()
-    return [dict(r) for r in rows]
+    return papers
+
+
+def load_paper_detail(paper_id: int) -> dict:
+    conn = get_db()
+    row = conn.execute(
+        """SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date
+           FROM papers p
+           JOIN evaluations e ON e.id = p.evaluation_id
+           WHERE p.id = ?""",
+        (paper_id,)
+    ).fetchone()
+    if not row:
+        conn.close()
+        return {}
+    p = dict(row)
+    debates = conn.execute("SELECT * FROM debate_rounds WHERE paper_id = ? ORDER BY round_num", (paper_id,)).fetchall()
+    verdicts = conn.execute("SELECT * FROM judge_verdicts WHERE paper_id = ? ORDER BY judge_run", (paper_id,)).fetchall()
+    p["debates"] = [dict(d) for d in debates]
+    v_list = []
+    for v in verdicts:
+        vd = dict(v)
+        try:
+            vd["key_reasons"] = json.loads(vd["key_reasons"]) if vd["key_reasons"] else []
+        except Exception:
+            vd["key_reasons"] = []
+        v_list.append(vd)
+    p["verdicts"] = v_list
+    conn.close()
+    return p
 
 
 def create_recurring_schedule(

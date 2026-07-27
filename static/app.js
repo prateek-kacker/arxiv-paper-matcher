@@ -8,11 +8,14 @@ document.addEventListener('DOMContentLoaded', () => {
     currentResults: [],
     currentSchedules: [],
     pastEvaluations: [],
+    allPapers: [],
+    selectedPaperIds: new Set(),
     abortController: null,
 
     init() {
       this.bindTabNavigation();
       this.bindFormControls();
+      this.bindPaperModal();
       this.fetchConfig();
       this.loadSchedules();
       this.loadHistory();
@@ -41,18 +44,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
 
-      // Subtabs in results
-      const subtabs = document.querySelectorAll('.subtab-btn');
-      subtabs.forEach(st => {
-        st.addEventListener('click', () => {
-          subtabs.forEach(t => t.classList.remove('active'));
-          document.querySelectorAll('.subtab-pane').forEach(p => p.classList.remove('active'));
+      // Subtabs (Works for both Results dashboard and History sub-tabs!)
+      document.addEventListener('click', (e) => {
+        if (e.target.classList.contains('subtab-btn')) {
+          const btn = e.target;
+          const parentHeader = btn.closest('.subtabs-header');
+          if (parentHeader) {
+            parentHeader.querySelectorAll('.subtab-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
 
-          st.classList.add('active');
-          const paneId = st.getAttribute('data-subtab');
-          const pane = document.getElementById(paneId);
-          if (pane) pane.classList.add('active');
-        });
+            const parentContainer = parentHeader.parentElement;
+            parentContainer.querySelectorAll('.subtab-pane').forEach(p => p.classList.remove('active'));
+
+            const paneId = btn.getAttribute('data-subtab');
+            const pane = document.getElementById(paneId);
+            if (pane) pane.classList.add('active');
+          }
+        }
       });
     },
 
@@ -148,11 +156,45 @@ document.addEventListener('DOMContentLoaded', () => {
         a.click();
       });
 
-      // History Search & Filter Inputs
+      // History Search, Score & Sort Inputs
       const historySearch = document.getElementById('history-search');
       const historyFilterScore = document.getElementById('history-filter-score');
-      if (historySearch) historySearch.addEventListener('input', () => this.renderHistory());
-      if (historyFilterScore) historyFilterScore.addEventListener('change', () => this.renderHistory());
+      const historySort = document.getElementById('history-sort');
+      if (historySearch) historySearch.addEventListener('input', () => { this.renderHistory(); this.renderHistoryPapersTable(); });
+      if (historyFilterScore) historyFilterScore.addEventListener('change', () => { this.renderHistory(); this.renderHistoryPapersTable(); });
+      if (historySort) historySort.addEventListener('change', () => this.renderHistoryPapersTable());
+
+      // Select All Checkbox
+      const chkSelectAll = document.getElementById('chk-select-all-papers');
+      if (chkSelectAll) {
+        chkSelectAll.addEventListener('change', (e) => {
+          const isChecked = e.target.checked;
+          const checkboxes = document.querySelectorAll('.chk-paper-item');
+          checkboxes.forEach(cb => {
+            cb.checked = isChecked;
+            const pid = parseInt(cb.getAttribute('data-id'));
+            if (isChecked) this.selectedPaperIds.add(pid);
+            else this.selectedPaperIds.delete(pid);
+          });
+          this.updateBulkActionButtons();
+        });
+      }
+
+      // Bulk Delete Papers Button
+      const btnDeleteSelected = document.getElementById('btn-delete-selected-papers');
+      if (btnDeleteSelected) {
+        btnDeleteSelected.addEventListener('click', () => this.deleteSelectedPapers());
+      }
+
+      // View Selected Details Button
+      const btnViewSelected = document.getElementById('btn-view-selected-papers');
+      if (btnViewSelected) {
+        btnViewSelected.addEventListener('click', () => {
+          const ids = Array.from(this.selectedPaperIds);
+          if (ids.length === 0) return alert('Select a paper to view details.');
+          this.openPaperDetailModal(ids[0]);
+        });
+      }
 
       // Create Schedule Form
       document.getElementById('form-schedule').addEventListener('submit', async (e) => {
@@ -199,6 +241,17 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('btn-cancel-edit').addEventListener('click', () => {
         document.getElementById('modal-edit-schedule').classList.add('hidden');
       });
+    },
+
+    bindPaperModal() {
+      const modal = document.getElementById('modal-paper-detail');
+      const btnClose = document.getElementById('btn-close-paper-modal');
+      if (btnClose) btnClose.addEventListener('click', () => modal.classList.add('hidden'));
+      if (modal) {
+        modal.addEventListener('click', (e) => {
+          if (e.target === modal) modal.classList.add('hidden');
+        });
+      }
     },
 
     // ── Live Stream Evaluation (SSE) ──
@@ -508,18 +561,260 @@ document.addEventListener('DOMContentLoaded', () => {
       }));
     },
 
-    // ── History List ──
+    // ── History List & Paper-Centric Table ──
     async loadHistory() {
       try {
-        const res = await fetch('/api/evaluations');
-        const data = await res.json();
-        this.pastEvaluations = data.evaluations || [];
+        const [resEval, resPapers] = await Promise.all([
+          fetch('/api/evaluations'),
+          fetch('/api/all-papers'),
+        ]);
+        const dataEval = await resEval.json();
+        const dataPapers = await resPapers.json();
+
+        this.pastEvaluations = dataEval.evaluations || [];
+        this.allPapers = dataPapers.papers || [];
+
+        this.selectedPaperIds.clear();
+        this.updateBulkActionButtons();
+
+        this.renderHistoryPapersTable();
         this.renderHistory();
       } catch (e) { console.error('History error:', e); }
     },
 
+    renderHistoryPapersTable() {
+      const tbody = document.getElementById('table-history-papers-body');
+      if (!tbody) return;
+      tbody.innerHTML = '';
+
+      const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
+      const scoreFilter = document.getElementById('history-filter-score')?.value || 'all';
+      const sortVal = document.getElementById('history-sort')?.value || 'score-desc';
+
+      let list = [...this.allPapers];
+
+      if (searchVal) {
+        list = list.filter(p =>
+          (p.title || '').toLowerCase().includes(searchVal) ||
+          (p.authors || '').toLowerCase().includes(searchVal) ||
+          (p.abstract || '').toLowerCase().includes(searchVal) ||
+          (p.problem_text || '').toLowerCase().includes(searchVal)
+        );
+      }
+
+      if (scoreFilter === 'high') {
+        list = list.filter(p => (p.avg_score || 0) >= 7);
+      } else if (scoreFilter === 'mid') {
+        list = list.filter(p => (p.avg_score || 0) >= 4 && (p.avg_score || 0) < 7);
+      } else if (scoreFilter === 'low') {
+        list = list.filter(p => (p.avg_score || 0) < 4);
+      }
+
+      // Sorting
+      if (sortVal === 'score-desc') {
+        list.sort((a, b) => b.avg_score - a.avg_score);
+      } else if (sortVal === 'score-asc') {
+        list.sort((a, b) => a.avg_score - b.avg_score);
+      } else if (sortVal === 'date-desc') {
+        list.sort((a, b) => new Date(b.eval_date || 0) - new Date(a.eval_date || 0));
+      } else if (sortVal === 'title-asc') {
+        list.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      }
+
+      if (!list.length) {
+        tbody.innerHTML = '<tr><td colspan="6" style="padding:16px;text-align:center;opacity:.6">No papers match your filter criteria.</td></tr>';
+        return;
+      }
+
+      list.forEach(p => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid var(--color-divider)';
+
+        const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
+        const isChecked = this.selectedPaperIds.has(p.id);
+
+        const chipsHtml = (p.judge_scores || []).map(j => {
+          const cls = j.score >= 7 ? 'high' : j.score >= 4 ? 'mid' : 'low';
+          return `<span class="judge-chip ${cls}" style="font-size:10px;padding:1px 3px">J${j.run}:${j.score}</span>`;
+        }).join(' ');
+
+        // Truncate problem text if long
+        const problemExcerpt = (p.problem_text || '').length > 110
+          ? `${p.problem_text.substring(0, 110)}...`
+          : p.problem_text;
+
+        tr.innerHTML = `
+          <td style="padding:10px;text-align:center">
+            <input type="checkbox" class="chk-paper-item" data-id="${p.id}" ${isChecked ? 'checked' : ''} />
+          </td>
+          <td style="padding:10px">
+            <div style="font-weight:800;font-size:14px">${p.title}</div>
+            <div style="font-size:11.5px;opacity:.6;margin-top:2px">👤 ${p.authors || 'Unknown'}</div>
+            <a href="${p.url}" target="_blank" style="font-size:11.5px;color:var(--color-accent);text-decoration:none;margin-top:2px;display:inline-block">Open arXiv &rarr;</a>
+          </td>
+          <td style="padding:10px">
+            <span class="score-badge ${scoreClass}" style="font-size:13px;padding:2px 8px">${p.avg_score}/10</span>
+            <div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:4px">${chipsHtml}</div>
+          </td>
+          <td style="padding:10px">
+            <div style="font-size:12.5px;line-height:1.4" title="${p.problem_text}">🎯 ${problemExcerpt}</div>
+          </td>
+          <td style="padding:10px;font-size:12px;opacity:.7">
+            <div>📅 ${(p.eval_date || '').split('T')[0] || (p.eval_date || '').split(' ')[0]}</div>
+            <div style="font-size:11px;opacity:.8">${p.model_name || ''}</div>
+          </td>
+          <td style="padding:10px">
+            <div style="display:flex;gap:4px">
+              <button class="btn btn-secondary btn-view-paper" data-id="${p.id}" style="padding:3px 8px;font-size:12px">👁️ View</button>
+              <button class="btn btn-secondary btn-del-paper" data-id="${p.id}" style="padding:3px 8px;font-size:12px;color:var(--color-accent)">🗑️</button>
+            </div>
+          </td>
+        `;
+        tbody.appendChild(tr);
+      });
+
+      // Bind row checkboxes
+      tbody.querySelectorAll('.chk-paper-item').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+          const pid = parseInt(e.target.getAttribute('data-id'));
+          if (e.target.checked) this.selectedPaperIds.add(pid);
+          else this.selectedPaperIds.delete(pid);
+          this.updateBulkActionButtons();
+        });
+      });
+
+      // Bind View Details buttons
+      tbody.querySelectorAll('.btn-view-paper').forEach(b => {
+        b.addEventListener('click', (e) => {
+          const pid = parseInt(e.target.getAttribute('data-id'));
+          this.openPaperDetailModal(pid);
+        });
+      });
+
+      // Bind Single Delete buttons
+      tbody.querySelectorAll('.btn-del-paper').forEach(b => {
+        b.addEventListener('click', async (e) => {
+          const pid = parseInt(e.target.getAttribute('data-id'));
+          if (confirm('Delete this paper record from database?')) {
+            await fetch('/api/papers', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ paper_ids: [pid] }),
+            });
+            this.loadHistory();
+          }
+        });
+      });
+    },
+
+    updateBulkActionButtons() {
+      const count = this.selectedPaperIds.size;
+      const countEl = document.getElementById('selected-papers-count');
+      const btnDel = document.getElementById('btn-delete-selected-papers');
+      const btnView = document.getElementById('btn-view-selected-papers');
+      const chkSelectAll = document.getElementById('chk-select-all-papers');
+
+      if (countEl) countEl.textContent = `Selected (${count})`;
+      if (btnDel) btnDel.disabled = count === 0;
+      if (btnView) btnView.disabled = count === 0;
+      if (chkSelectAll) chkSelectAll.checked = count > 0 && count === this.allPapers.length;
+    },
+
+    async deleteSelectedPapers() {
+      const ids = Array.from(this.selectedPaperIds);
+      if (!ids.length) return;
+      if (confirm(`Delete ${ids.length} selected paper(s) from database?`)) {
+        await fetch('/api/papers', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paper_ids: ids }),
+        });
+        this.selectedPaperIds.clear();
+        this.loadHistory();
+      }
+    },
+
+    async openPaperDetailModal(paperId) {
+      const modal = document.getElementById('modal-paper-detail');
+      const titleEl = document.getElementById('modal-paper-title');
+      const contentEl = document.getElementById('modal-paper-content');
+
+      modal.classList.remove('hidden');
+      titleEl.textContent = 'Loading Paper Details...';
+      contentEl.innerHTML = '<p style="opacity:.6">Fetching paper, 5-judge panel verdicts and debate transcripts...</p>';
+
+      try {
+        const res = await fetch(`/api/papers/${paperId}`);
+        if (!res.ok) throw new Error('Paper detail fetch failed');
+        const p = await res.json();
+
+        const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
+        titleEl.textContent = p.title;
+
+        // Judge Transcripts HTML
+        let judgesHtml = '';
+        if (p.verdicts && p.verdicts.length) {
+          judgesHtml = p.verdicts.map(j => {
+            const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
+            const reasonsList = Array.isArray(j.key_reasons) ? j.key_reasons.map(r => `<li>${r}</li>`).join('') : '';
+            return `
+              <div class="debate-panel" style="background:var(--color-surface);border-left:3px solid var(--color-accent);margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                  <strong style="font-size:13px">⚖️ Judge #${j.judge_run} (Seed: ${j.seed || 'N/A'})</strong>
+                  <span class="score-badge ${cls}" style="font-size:12px;padding:2px 6px">${j.relevance_score}/10</span>
+                </div>
+                <div style="font-size:12.5px;margin-bottom:4px"><strong>Verdict:</strong> ${j.verdict || 'N/A'}</div>
+                ${reasonsList ? `<ul style="margin:4px 0 4px 16px;padding:0;font-size:12px;opacity:.85">${reasonsList}</ul>` : ''}
+                ${j.suggested_use ? `<div style="font-size:12px;opacity:.8"><strong>Suggested Use:</strong> ${j.suggested_use}</div>` : ''}
+              </div>
+            `;
+          }).join('');
+        }
+
+        // Debate Rounds HTML
+        let debatesHtml = '';
+        if (p.debates && p.debates.length) {
+          debatesHtml = p.debates.map((rnd, i) => `
+            <div class="debate-panel debate-advocate" style="margin-bottom:8px">
+              <div style="font-weight:800;font-size:12px;color:oklch(38% 0.15 155);margin-bottom:4px">🟢 Advocate (Round ${rnd.round_num || (i + 1)})</div>
+              <div style="font-size:13px">${rnd.advocate_arg}</div>
+            </div>
+            <div class="debate-panel debate-skeptic" style="margin-bottom:8px">
+              <div style="font-weight:800;font-size:12px;color:var(--color-accent);margin-bottom:4px">🔴 Skeptic (Round ${rnd.round_num || (i + 1)})</div>
+              <div style="font-size:13px">${rnd.skeptic_arg}</div>
+            </div>
+          `).join('');
+        }
+
+        contentEl.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--color-surface);border:1px solid var(--color-divider)">
+            <div>
+              <div style="font-size:12px;opacity:.6">👤 ${p.authors || 'Unknown'} · 📅 ${p.published || ''}</div>
+              <div style="font-size:12.5px;margin-top:2px">🎯 <strong>Research Problem:</strong> ${p.problem_text}</div>
+            </div>
+            <span class="score-badge ${scoreClass}" style="font-size:16px;padding:4px 10px">${p.avg_score}/10</span>
+          </div>
+
+          <div style="display:flex;gap:10px">
+            <a href="${p.url}" target="_blank" class="btn btn-primary">Open Paper on arXiv &rarr;</a>
+          </div>
+
+          <div>
+            <h5 style="margin:0 0 4px">Abstract</h5>
+            <p style="font-size:13px;line-height:1.5;opacity:.85;margin:0">${p.abstract || 'No abstract available.'}</p>
+          </div>
+
+          ${judgesHtml ? `<div><h5 style="margin:8px 0 6px">⚖️ 5-Judge Panel Individual Verdicts &amp; Suggested Uses</h5>${judgesHtml}</div>` : ''}
+          ${debatesHtml ? `<div><h5 style="margin:8px 0 6px">🗣️ Advocate vs. Skeptic Multi-Agent Debates</h5>${debatesHtml}</div>` : ''}
+        `;
+      } catch (err) {
+        contentEl.innerHTML = `<p style="color:var(--color-accent)">Failed to load paper details: ${err.message}</p>`;
+      }
+    },
+
     renderHistory() {
       const container = document.getElementById('history-list');
+      if (!container) return;
       container.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
@@ -544,7 +839,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (!list.length) {
-        container.innerHTML = '<p style="opacity:.6">No past evaluations match your filter.</p>';
+        container.innerHTML = '<p style="opacity:.6">No past evaluation runs match your filter.</p>';
         return;
       }
 
@@ -554,7 +849,7 @@ document.addEventListener('DOMContentLoaded', () => {
         card.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div style="font-weight:800;font-size:15px">Eval #${ev.id} — Overall: ${ev.overall_avg || 0}/10</div>
-            <button class="btn btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--color-accent)">Delete</button>
+            <button class="btn btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--color-accent)">Delete Run</button>
           </div>
           <div style="font-size:13.5px"><strong>Problem:</strong> ${ev.problem_text}</div>
           <div style="font-size:12px;opacity:.6">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers Evaluated: ${ev.paper_count}</div>
@@ -572,7 +867,7 @@ document.addEventListener('DOMContentLoaded', () => {
       // Bind delete buttons
       container.querySelectorAll('.btn-del-eval').forEach(b => b.addEventListener('click', async e => {
         const id = e.target.getAttribute('data-id');
-        if (confirm(`Delete evaluation #${id}?`)) {
+        if (confirm(`Delete evaluation run #${id}?`)) {
           await fetch(`/api/evaluations/${id}`, { method: 'DELETE' });
           this.loadHistory();
         }

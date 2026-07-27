@@ -403,6 +403,14 @@ async def list_all_papers():
     return {"papers": load_all_papers()}
 
 
+@app.get("/api/papers/{paper_id}")
+async def get_paper_detail_endpoint(paper_id: int):
+    detail = core.load_paper_detail(paper_id)
+    if not detail:
+        raise HTTPException(status_code=404, detail="Paper not found")
+    return detail
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("server:app", host="0.0.0.0", port=8080, reload=True)

@@ -300,16 +300,73 @@
         <!-- ============ TAB 3: HISTORY ============ -->
         <section id="tab-history" class="tab-pane">
           <div style="display:flex;flex-direction:column;gap:20px">
-            <div class="card elev-sm" style="flex-direction:row;gap:12px">
-              <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or problem..." style="flex:1" />
-              <select id="history-filter-score" class="input" style="width:200px">
-                <option value="all">All relevance scores</option>
-                <option value="high">🟢 High (7-10)</option>
-                <option value="mid">🟡 Moderate (4-6)</option>
-                <option value="low">🔴 Low (1-3)</option>
-              </select>
+            
+            <!-- History Sub-Tabs -->
+            <div class="subtabs-header">
+              <button class="subtab-btn active" data-subtab="history-subtab-table">📋 All Evaluated Papers Table</button>
+              <button class="subtab-btn" data-subtab="history-subtab-runs">📁 Evaluation Runs</button>
             </div>
-            <div id="history-list" style="display:flex;flex-direction:column;gap:12px"></div>
+
+            <!-- SUBTAB 1: PAPER-CENTRIC TABLE -->
+            <div id="history-subtab-table" class="subtab-pane active" style="display:flex;flex-direction:column;gap:16px">
+              
+              <!-- Filter & Search Toolbar -->
+              <div class="card elev-sm" style="flex-direction:row;gap:12px;align-items:center;flex-wrap:wrap">
+                <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or research problem..." style="flex:1;min-width:250px" />
+                <select id="history-filter-score" class="input" style="width:180px">
+                  <option value="all">All relevance scores</option>
+                  <option value="high">🟢 High (7-10)</option>
+                  <option value="mid">🟡 Moderate (4-6)</option>
+                  <option value="low">🔴 Low (1-3)</option>
+                </select>
+                <select id="history-sort" class="input" style="width:180px">
+                  <option value="score-desc">Score: High &rarr; Low</option>
+                  <option value="score-asc">Score: Low &rarr; High</option>
+                  <option value="date-desc">Date: Newest First</option>
+                  <option value="title-asc">Title: A &rarr; Z</option>
+                </select>
+              </div>
+
+              <!-- Bulk Actions Toolbar -->
+              <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">
+                <div style="display:flex;align-items:center;gap:12px">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:800;cursor:pointer">
+                    <input type="checkbox" id="chk-select-all-papers" />
+                    Select All
+                  </label>
+                  <span id="selected-papers-count" style="font-size:13px;opacity:.7">Selected (0)</span>
+                </div>
+                <div style="display:flex;gap:8px">
+                  <button id="btn-view-selected-papers" class="btn btn-secondary" disabled>👁️ View Selected Details</button>
+                  <button id="btn-delete-selected-papers" class="btn btn-secondary" style="color:var(--color-accent)" disabled>🗑️ Delete Selected Papers</button>
+                </div>
+              </div>
+
+              <!-- Papers Table Container -->
+              <div style="overflow-x:auto;border:1px solid var(--color-divider)">
+                <table id="table-history-papers" style="width:100%;border-collapse:collapse;font-size:13.5px">
+                  <thead>
+                    <tr style="background:var(--color-surface);border-bottom:2px solid var(--color-divider);text-align:left">
+                      <th style="padding:10px;width:30px"></th>
+                      <th style="padding:10px">Paper Title &amp; Authors</th>
+                      <th style="padding:10px;width:130px">Score</th>
+                      <th style="padding:10px">Research Problem</th>
+                      <th style="padding:10px;width:120px">Date</th>
+                      <th style="padding:10px;width:120px">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="table-history-papers-body">
+                    <tr><td colspan="6" style="padding:16px;text-align:center;opacity:.6">Loading papers...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- SUBTAB 2: EVALUATION RUNS -->
+            <div id="history-subtab-runs" class="subtab-pane">
+              <div id="history-list" style="display:flex;flex-direction:column;gap:12px"></div>
+            </div>
+
           </div>
         </section>
       </div>
@@ -355,6 +412,19 @@
           <button type="submit" class="btn btn-primary">Save Changes</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- VIEW PAPER DETAILS MODAL -->
+  <div id="modal-paper-detail" class="modal-backdrop hidden">
+    <div class="modal-dialog" style="max-width:800px;max-height:85vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start">
+        <h3 id="modal-paper-title" style="margin:0">Paper Details</h3>
+        <button type="button" id="btn-close-paper-modal" class="btn btn-secondary" style="padding:4px 10px">✕</button>
+      </div>
+      <div id="modal-paper-content" style="display:flex;flex-direction:column;gap:16px;margin-top:12px">
+        <p style="opacity:.6">Loading paper details...</p>
+      </div>
     </div>
   </div>
 
