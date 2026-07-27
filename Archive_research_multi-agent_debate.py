@@ -35,6 +35,8 @@ from urllib import request, error
 DB_PATH = Path(os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher.db")))
 DB_GCS_BUCKET = os.environ.get("PAPER_MATCHER_DB_BUCKET", "").strip()
 DB_GCS_BLOB = os.environ.get("PAPER_MATCHER_DB_BLOB", "paper_matcher.db").strip() or "paper_matcher.db"
+AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "").strip()
+AWS_S3_KEY = os.environ.get("AWS_S3_KEY", "paper_matcher.db").strip() or "paper_matcher.db"
 PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "240"))
 _DB_SYNC_LOCK = threading.Lock()
 
@@ -54,46 +56,82 @@ def _checkpoint_db():
     conn.close()
 
 
-def sync_db_from_gcs() -> tuple[bool, str]:
-    """Download DB file from GCS if configured and object exists."""
-    if not DB_GCS_BUCKET:
-        return False, "GCS persistence disabled"
-
-    try:
-        client = storage.Client()
-        bucket = client.bucket(DB_GCS_BUCKET)
-        blob = bucket.blob(DB_GCS_BLOB)
-        if not blob.exists(client):
-            return False, "No existing DB object in GCS"
-
-        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(DB_PATH))
-        for p in _db_sidecar_paths():
-            if p.exists():
-                p.unlink()
-        return True, "DB downloaded from GCS"
-    except Exception as e:
-        return False, f"Failed to load DB from GCS: {e}"
-
-
-def sync_db_to_gcs() -> tuple[bool, str]:
-    """Upload local DB file to GCS for persistence."""
-    if not DB_GCS_BUCKET:
-        return False, "GCS persistence disabled"
-
-    if not DB_PATH.exists():
-        return False, "Local DB file not found"
-
-    with _DB_SYNC_LOCK:
+def sync_db_from_cloud() -> tuple[bool, str]:
+    """Download DB file from Cloud Storage (GCS or AWS S3)."""
+    # 1. Check GCS first if configured
+    if DB_GCS_BUCKET:
         try:
-            _checkpoint_db()
             client = storage.Client()
             bucket = client.bucket(DB_GCS_BUCKET)
             blob = bucket.blob(DB_GCS_BLOB)
-            blob.upload_from_filename(str(DB_PATH))
-            return True, "DB uploaded to GCS"
+            if blob.exists(client):
+                DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+                blob.download_to_filename(str(DB_PATH))
+                for p in _db_sidecar_paths():
+                    if p.exists():
+                        p.unlink()
+                return True, f"DB downloaded from GCS bucket `{DB_GCS_BUCKET}`"
         except Exception as e:
-            return False, f"Failed to sync DB to GCS: {e}"
+            return False, f"Failed to load DB from GCS: {e}"
+
+    # 2. Check S3 if configured
+    if AWS_S3_BUCKET:
+        try:
+            import boto3
+            s3 = boto3.client("s3")
+            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            s3.download_file(AWS_S3_BUCKET, AWS_S3_KEY, str(DB_PATH))
+            for p in _db_sidecar_paths():
+                if p.exists():
+                    p.unlink()
+            return True, f"DB downloaded from AWS S3 bucket `{AWS_S3_BUCKET}`"
+        except Exception as e:
+            return False, f"Failed to load DB from S3: {e}"
+
+    return False, "Cloud persistence disabled (neither GCS nor S3 bucket set)"
+
+
+def sync_db_to_cloud() -> tuple[bool, str]:
+    """Upload local DB file to Cloud Storage (GCS and/or AWS S3)."""
+    if not DB_PATH.exists():
+        return False, "Local DB file not found"
+
+    if not DB_GCS_BUCKET and not AWS_S3_BUCKET:
+        return False, "Cloud persistence disabled"
+
+    results = []
+    with _DB_SYNC_LOCK:
+        _checkpoint_db()
+        if DB_GCS_BUCKET:
+            try:
+                client = storage.Client()
+                bucket = client.bucket(DB_GCS_BUCKET)
+                blob = bucket.blob(DB_GCS_BLOB)
+                blob.upload_from_filename(str(DB_PATH))
+                results.append(f"GCS (`{DB_GCS_BUCKET}`)")
+            except Exception as e:
+                results.append(f"GCS error: {e}")
+
+        if AWS_S3_BUCKET:
+            try:
+                import boto3
+                s3 = boto3.client("s3")
+                s3.upload_file(str(DB_PATH), AWS_S3_BUCKET, AWS_S3_KEY)
+                results.append(f"S3 (`{AWS_S3_BUCKET}`)")
+            except Exception as e:
+                results.append(f"S3 error: {e}")
+
+    return True, f"Uploaded to: {', '.join(results)}"
+
+
+# Backwards compatibility aliases
+def sync_db_from_gcs() -> tuple[bool, str]:
+    return sync_db_from_cloud()
+
+
+def sync_db_to_gcs() -> tuple[bool, str]:
+    return sync_db_to_cloud()
+
 
 
 def get_db() -> sqlite3.Connection:
@@ -365,7 +403,56 @@ def create_recurring_schedule(
     return schedule_id
 
 
+def update_recurring_schedule(
+    schedule_id: int,
+    label: str,
+    problem_text: str,
+    model_name: str,
+    fetch_mode: str,
+    max_papers: Optional[int],
+    days_back: Optional[int],
+    keyword_filter: str,
+    min_score: int,
+    max_concurrent: int,
+    run_time: str,
+    sync_cloud: bool = True,
+):
+    conn = get_db()
+    conn.execute(
+        """UPDATE recurring_schedules
+           SET label = ?,
+               problem_text = ?,
+               model_name = ?,
+               fetch_mode = ?,
+               max_papers = ?,
+               days_back = ?,
+               keyword_filter = ?,
+               min_score = ?,
+               max_concurrent = ?,
+               run_time = ?
+           WHERE id = ?""",
+        (
+            label,
+            problem_text,
+            model_name,
+            fetch_mode,
+            max_papers,
+            days_back,
+            keyword_filter,
+            min_score,
+            max_concurrent,
+            run_time,
+            schedule_id,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    if sync_cloud:
+        sync_db_to_cloud()
+
+
 def load_recurring_schedules() -> list[dict]:
+
     conn = get_db()
     rows = conn.execute(
         """SELECT * FROM recurring_schedules
@@ -1979,7 +2066,9 @@ def main():
                     elif t.get("stage") in {"fetching", "saving", "syncing"}:
                         st.progress(0.0, text=stage_label)
                 st.caption("🔄 Updating every 3 seconds while evaluation is running.")
-                st.autorefresh(interval=3000, limit=None)
+                time.sleep(3)
+                st.rerun()
+
 
             if done_tasks:
                 for t in done_tasks.values():
@@ -2113,7 +2202,7 @@ def main():
                         f"Message: {sch.get('last_message') or 'N/A'}"
                     )
 
-                    a1, a2, a3 = st.columns([1, 1, 1])
+                    a1, a2, a3, a4 = st.columns([1, 1, 1, 1])
                     with a1:
                         toggle_label = "⏸️ Pause" if sch.get("is_active") else "▶️ Activate"
                         if st.button(toggle_label, key=f"toggle_rec_{sch['id']}", use_container_width=True):
@@ -2144,10 +2233,80 @@ def main():
                                 )
                                 st.rerun()
                     with a3:
+                        edit_key = f"show_edit_{sch['id']}"
+                        is_editing = st.session_state.get(edit_key, False)
+                        if st.button("✏️ Edit", key=f"edit_rec_btn_{sch['id']}", use_container_width=True):
+                            st.session_state[edit_key] = not is_editing
+                            st.rerun()
+                    with a4:
                         if st.button("🗑️ Delete", key=f"del_rec_{sch['id']}", use_container_width=True):
                             delete_recurring_schedule(sch["id"])
                             st.success(f"Deleted schedule #{sch['id']}.")
                             st.rerun()
+
+                    # ── Inline Edit Form ──
+                    if st.session_state.get(f"show_edit_{sch['id']}", False):
+                        st.divider()
+                        st.markdown(f"##### ✏️ Edit Schedule #{sch['id']}")
+                        with st.form(f"edit_schedule_form_{sch['id']}"):
+                            edit_label = st.text_input("Schedule label", value=sch.get("label", ""))
+                            edit_problem = st.text_area("Research problem", value=sch.get("problem_text", ""), height=100)
+                            
+                            models_list = [
+                                "gemini-3-pro-preview",
+                                "gemini-3-flash-preview",
+                                "gemini-2.5-pro",
+                                "gemini-2.5-flash",
+                                "gemini-2.0-flash",
+                            ]
+                            cur_model_idx = models_list.index(sch.get("model_name")) if sch.get("model_name") in models_list else 0
+                            edit_model = st.selectbox("Gemini model", models_list, index=cur_model_idx, key=f"edit_model_{sch['id']}")
+
+                            mode_idx = 0 if sch.get("fetch_mode") == "count" else 1
+                            edit_fetch_mode = st.radio("Fetch mode", ["By number of papers", "By last N days"], index=mode_idx, horizontal=True, key=f"edit_mode_{sch['id']}")
+
+                            if edit_fetch_mode == "By number of papers":
+                                edit_max_papers = st.slider("Papers to fetch", 5, 100, sch.get("max_papers") or 50, step=5, key=f"edit_max_{sch['id']}")
+                                edit_days_back = None
+                            else:
+                                edit_days_back = st.slider("Papers from last N days", 1, 90, sch.get("days_back") or 7, step=1, key=f"edit_days_{sch['id']}")
+                                edit_max_papers = None
+
+                            edit_keyword = st.text_input("Optional keyword filter", value=sch.get("keyword_filter") or "", key=f"edit_kw_{sch['id']}")
+                            edit_min_score = st.slider("Min relevance score", 1, 10, sch.get("min_score") or 6, key=f"edit_min_{sch['id']}")
+                            edit_max_concurrent = st.slider("Parallel evaluations", 1, 10, sch.get("max_concurrent") or 3, key=f"edit_conc_{sch['id']}")
+
+                            try:
+                                time_parts = (sch.get("run_time") or "08:00").split(":")
+                                init_time = datetime.now().replace(hour=int(time_parts[0]), minute=int(time_parts[1]), second=0, microsecond=0).time()
+                            except Exception:
+                                init_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0).time()
+
+                            edit_run_time = st.time_input("Daily run time (server local time)", value=init_time, key=f"edit_time_{sch['id']}")
+
+                            save_edit = st.form_submit_button("💾 Save Changes", type="primary")
+
+                        if save_edit:
+                            if not edit_problem.strip():
+                                st.error("Research problem cannot be empty.")
+                            else:
+                                update_recurring_schedule(
+                                    schedule_id=sch["id"],
+                                    label=edit_label.strip() or f"Schedule #{sch['id']}",
+                                    problem_text=edit_problem.strip(),
+                                    model_name=edit_model,
+                                    fetch_mode="count" if edit_fetch_mode == "By number of papers" else "days",
+                                    max_papers=edit_max_papers,
+                                    days_back=edit_days_back,
+                                    keyword_filter=edit_keyword.strip(),
+                                    min_score=edit_min_score,
+                                    max_concurrent=edit_max_concurrent,
+                                    run_time=edit_run_time.strftime("%H:%M"),
+                                )
+                                st.session_state[f"show_edit_{sch['id']}"] = False
+                                st.success(f"Updated schedule #{sch['id']}.")
+                                st.rerun()
+
 
     # ══════════════════════════════════════════════════════════════════════════
     # PAST EVALUATIONS TAB

@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY Archive_research_multi-agent_debate.py ./
+COPY Archive_research_multi-agent_debate.py batch_runner.py ./
 
 EXPOSE 8080
 
