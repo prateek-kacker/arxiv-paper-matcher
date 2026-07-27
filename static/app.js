@@ -1,6 +1,6 @@
 /**
- * arXiv CS.CL Paper Matcher — Single Page Application JS Logic
- * Zero-reload interactive interface for research evaluation.
+ * arXiv CS.CL Paper Matcher — SPA JS Engine
+ * Replicates the Streamlit UI layout with zero page reloads.
  */
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -11,8 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     init() {
       this.bindTabNavigation();
-      this.bindFormEvents();
-      this.bindModalEvents();
+      this.bindFormControls();
       this.fetchConfig();
       this.loadSchedules();
       this.loadHistory();
@@ -20,7 +19,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── Navigation ──
     bindTabNavigation() {
-      const tabs = document.querySelectorAll('.nav-tab');
+      // Main Page Tabs
+      const tabs = document.querySelectorAll('.st-tab');
       tabs.forEach(tab => {
         tab.addEventListener('click', () => {
           tabs.forEach(t => t.classList.remove('active'));
@@ -33,19 +33,22 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
 
-      // Filter tabs in results
-      const filterBtns = document.querySelectorAll('.filter-btn');
-      filterBtns.forEach(btn => {
-        btn.addEventListener('click', () => {
-          filterBtns.forEach(b => b.classList.remove('active'));
-          btn.classList.add('active');
-          const filter = btn.getAttribute('data-filter');
-          this.renderResultsList(filter);
+      // Results Sub-tabs
+      const subtabs = document.querySelectorAll('.subtab');
+      subtabs.forEach(st => {
+        st.addEventListener('click', () => {
+          subtabs.forEach(t => t.classList.remove('active'));
+          document.querySelectorAll('.subtab-pane').forEach(p => p.classList.remove('active'));
+
+          st.classList.add('active');
+          const paneId = st.getAttribute('data-subtab');
+          const pane = document.getElementById(paneId);
+          if (pane) pane.classList.add('active');
         });
       });
     },
 
-    // ── Config & Status ──
+    // ── Config ──
     async fetchConfig() {
       try {
         const res = await fetch('/api/config');
@@ -53,44 +56,40 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const keyBadge = document.getElementById('status-api-key');
         if (data.has_api_key) {
-          keyBadge.className = 'status-badge badge-success';
-          keyBadge.textContent = '🔑 API Key Configured';
+          keyBadge.className = 'alert-box alert-success';
+          keyBadge.textContent = '🔑 API key loaded from Secret Manager';
         } else {
-          keyBadge.className = 'status-badge badge-warning';
-          keyBadge.textContent = '⚠️ API Key Missing';
+          keyBadge.className = 'alert-box alert-warning';
+          keyBadge.textContent = '⚠️ Set GEMINI_API_KEY in Secret Manager';
         }
 
         const cloudBadge = document.getElementById('status-cloud-sync');
         if (data.gcs_bucket || data.s3_bucket) {
-          cloudBadge.className = 'status-badge badge-info';
-          cloudBadge.textContent = `☁️ Syncing: ${data.gcs_bucket || data.s3_bucket}`;
-        } else {
-          cloudBadge.className = 'status-badge';
-          cloudBadge.textContent = '💾 Local Storage';
+          cloudBadge.className = 'alert-box alert-info';
+          cloudBadge.textContent = `💾 Persistent DB: ${data.gcs_bucket || data.s3_bucket}`;
         }
       } catch (e) {
-        console.error('Config fetch failed:', e);
+        console.error('Config error:', e);
       }
     },
 
-    // ── Form Sliders & Controls ──
-    bindFormEvents() {
-      // Sliders
-      const bindSlider = (id, labelId) => {
-        const slider = document.getElementById(id);
-        const label = document.getElementById(labelId);
-        if (slider && label) {
-          slider.addEventListener('input', () => { label.textContent = slider.value; });
+    // ── Controls & Range Sliders ──
+    bindFormControls() {
+      const bindVal = (id, targetId) => {
+        const input = document.getElementById(id);
+        const target = document.getElementById(targetId);
+        if (input && target) {
+          input.addEventListener('input', () => { target.textContent = input.value; });
         }
       };
-      bindSlider('max-papers', 'val-max-papers');
-      bindSlider('days-back', 'val-days-back');
-      bindSlider('min-score', 'val-min-score');
-      bindSlider('max-concurrent', 'val-max-concurrent');
+
+      bindVal('max-papers', 'val-max-papers');
+      bindVal('days-back', 'val-days-back');
+      bindVal('min-score', 'val-min-score');
+      bindVal('max-concurrent', 'val-max-concurrent');
 
       // Fetch Mode Radio
-      const radios = document.querySelectorAll('input[name="fetch-mode"]');
-      radios.forEach(radio => {
+      document.querySelectorAll('input[name="fetch-mode"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
           const isCount = e.target.value === 'count';
           document.getElementById('group-paper-count').classList.toggle('hidden', !isCount);
@@ -98,29 +97,75 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
 
-      // Submit Form (Live Stream Evaluation)
-      const form = document.getElementById('eval-form');
-      form.addEventListener('submit', (e) => {
-        e.preventDefault();
-        this.startLiveStreamEvaluation();
+      // Actions
+      document.getElementById('btn-run-all').addEventListener('click', () => this.startLiveStreamEvaluation());
+      document.getElementById('btn-clear-results').addEventListener('click', () => {
+        this.currentResults = [];
+        document.getElementById('results-dashboard').classList.add('hidden');
+        document.getElementById('evaluation-stream-container').innerHTML = '';
       });
 
-      // Export JSON
-      document.getElementById('btn-export-json').addEventListener('click', () => {
-        if (!this.currentResults.length) return;
-        const blob = new Blob([JSON.stringify(this.currentResults, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'arxiv_paper_matches.json';
-        a.click();
+      document.getElementById('btn-add-recurring').addEventListener('click', () => {
+        const problem = document.getElementById('problem-statement').value.trim();
+        if (!problem) return alert('Please enter your research problem first.');
+        this.openEditModal(null);
+      });
+
+      // Modal submit
+      document.getElementById('form-create-schedule').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const payload = {
+          label: document.getElementById('sch-label').value.trim(),
+          problem_text: document.getElementById('sch-problem').value.trim(),
+          model_name: document.getElementById('sch-model').value,
+          run_time: document.getElementById('sch-time').value,
+          max_papers: parseInt(document.getElementById('sch-papers').value) || 50,
+          keyword_filter: document.getElementById('sch-keyword').value.trim(),
+          fetch_mode: 'count',
+        };
+        await fetch('/api/schedules', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        alert('Created recurring schedule!');
+        this.loadSchedules();
+      });
+
+      // Modal Edit submit
+      document.getElementById('form-edit-schedule').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const id = document.getElementById('edit-sch-id').value;
+        const payload = {
+          label: document.getElementById('edit-sch-label').value.trim(),
+          problem_text: document.getElementById('edit-sch-problem').value.trim(),
+          model_name: document.getElementById('edit-sch-model').value,
+          run_time: document.getElementById('edit-sch-time').value,
+          max_papers: parseInt(document.getElementById('edit-sch-papers').value) || 50,
+          keyword_filter: document.getElementById('edit-sch-keyword').value.trim(),
+          fetch_mode: 'count',
+        };
+        await fetch(`/api/schedules/${id}`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        document.getElementById('modal-edit-schedule').classList.add('hidden');
+        this.loadSchedules();
+      });
+
+      document.getElementById('btn-close-modal').addEventListener('click', () => {
+        document.getElementById('modal-edit-schedule').classList.add('hidden');
+      });
+      document.getElementById('btn-cancel-edit').addEventListener('click', () => {
+        document.getElementById('modal-edit-schedule').classList.add('hidden');
       });
     },
 
-    // ── Live Stream Evaluation (SSE) ──
+    // ── Live Stream Evaluation ──
     async startLiveStreamEvaluation() {
       const problem = document.getElementById('problem-statement').value.trim();
-      if (!problem) return alert('Please enter a research problem description.');
+      if (!problem) return alert('Please describe your research problem.');
 
       const model = document.getElementById('model-name').value;
       const fetchMode = document.querySelector('input[name="fetch-mode"]:checked').value;
@@ -129,17 +174,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const keyword = document.getElementById('keyword-filter').value.trim();
       const concurrent = parseInt(document.getElementById('max-concurrent').value);
 
-      const statusEl = document.getElementById('stream-status');
-      const outputEl = document.getElementById('stream-output');
-      const progressContainer = document.getElementById('live-progress-bar');
+      const statusBox = document.getElementById('status-container');
+      const statusText = document.getElementById('status-text');
       const progressFill = document.getElementById('progress-fill');
-      const resultsSection = document.getElementById('results-section');
+      const streamContainer = document.getElementById('evaluation-stream-container');
 
-      statusEl.textContent = '🚀 Starting live evaluation stream...';
-      outputEl.textContent = '';
-      progressContainer.classList.remove('hidden');
+      statusBox.classList.remove('hidden');
+      statusText.textContent = '📡 Fetching papers from arXiv CS.CL...';
       progressFill.style.width = '0%';
-      resultsSection.classList.add('hidden');
+      streamContainer.innerHTML = '';
+      document.getElementById('results-dashboard').classList.add('hidden');
       this.currentResults = [];
 
       try {
@@ -158,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (!response.ok) {
           const err = await response.json();
-          statusEl.textContent = `❌ Error: ${err.detail || 'Evaluation failed.'}`;
+          statusText.textContent = `❌ Error: ${err.detail || 'Evaluation failed.'}`;
           return;
         }
 
@@ -172,7 +216,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           buffer += decoder.decode(value, { stream: true });
           const lines = buffer.split('\n');
-          buffer = lines.pop(); // Keep unfinished chunk in buffer
+          buffer = lines.pop();
 
           let currentEvent = 'message';
           for (const line of lines) {
@@ -183,316 +227,259 @@ document.addEventListener('DOMContentLoaded', () => {
               if (dataStr) {
                 try {
                   const data = JSON.parse(dataStr);
-                  this.handleSSEEvent(currentEvent, data, statusEl, outputEl, progressFill);
+                  this.handleStreamEvent(currentEvent, data, statusText, progressFill, streamContainer);
                 } catch (err) {
-                  console.error('JSON parse error:', err, dataStr);
+                  console.error('SSE Error:', err);
                 }
               }
             }
           }
         }
       } catch (e) {
-        statusEl.textContent = `❌ Stream error: ${e.message}`;
+        statusText.textContent = `❌ Connection error: ${e.message}`;
       }
     },
 
-    handleSSEEvent(event, data, statusEl, outputEl, progressFill) {
-      const logLine = (txt) => {
-        const time = new Date().toLocaleTimeString();
-        outputEl.textContent += `[${time}] ${txt}\n`;
-        outputEl.scrollTop = outputEl.scrollHeight;
-      };
-
+    handleStreamEvent(event, data, statusText, progressFill, streamContainer) {
       if (event === 'stage') {
-        statusEl.textContent = `📡 ${data.message}`;
-        logLine(data.message);
+        statusText.textContent = `📡 ${data.message}`;
       } else if (event === 'paper_start') {
         const pct = Math.round((data.paper_index / data.total_papers) * 100);
         progressFill.style.width = `${pct}%`;
-        statusEl.textContent = `🔬 Evaluating paper ${data.paper_index}/${data.total_papers}: ${data.title.substring(0, 60)}...`;
-        logLine(`Evaluating [${data.paper_index}/${data.total_papers}]: ${data.title}`);
+        statusText.textContent = `📄 [${data.paper_index}/${data.total_papers}] ${data.title.substring(0, 70)}...`;
+
+        const card = document.createElement('div');
+        card.id = `stream-paper-${data.paper_index}`;
+        card.className = 'paper-card';
+        card.innerHTML = `
+          <div><strong>[${data.paper_index}/${data.total_papers}] ${data.title}</strong></div>
+          <div class="caption-muted">👤 ${data.authors} &nbsp;|&nbsp; 📅 ${data.published}</div>
+          <div class="paper-status-msg" style="margin-top:0.5rem;color:var(--st-primary)">⏳ Evaluating multi-agent debate...</div>
+        `;
+        streamContainer.appendChild(card);
       } else if (event === 'paper_done') {
-        logLine(`✅ Score: ${data.avg_score}/10 — ${data.title}`);
         this.currentResults.push(data);
+        const card = document.getElementById(`stream-paper-${data.paper_index}`);
+        if (card) {
+          const scoreClass = data.avg_score >= 7 ? 'score-high' : data.avg_score >= 4 ? 'score-mid' : 'score-low';
+          card.querySelector('.paper-status-msg').innerHTML = `<span class="${scoreClass}">Score: ${data.avg_score}/10</span> &nbsp;|&nbsp; ${data.verdict}`;
+        }
       } else if (event === 'eval_complete') {
-        statusEl.textContent = `🎉 ${data.message}`;
+        statusText.textContent = `✅ ${data.message}`;
         progressFill.style.width = '100%';
-        logLine(`Completed! Total evaluated: ${data.total_evaluated}`);
-        this.renderResults();
-      } else if (event === 'error') {
-        statusEl.textContent = `❌ Error: ${data.error}`;
-        logLine(`ERROR: ${data.error}`);
+        this.renderResultsDashboard();
       }
     },
 
-    // ── Render Results Dashboard ──
-    renderResults() {
-      const resultsSection = document.getElementById('results-section');
-      resultsSection.classList.remove('hidden');
-
+    // ── Render Streamlit Dashboard ──
+    renderResultsDashboard() {
       const results = this.currentResults;
+      document.getElementById('results-dashboard').classList.remove('hidden');
+
       document.getElementById('metric-total').textContent = results.length;
+      document.getElementById('metric-high').textContent = results.filter(r => r.avg_score >= 7).length;
+      document.getElementById('metric-mid').textContent = results.filter(r => r.avg_score >= 4 && r.avg_score < 7).length;
+      document.getElementById('metric-low').textContent = results.filter(r => r.avg_score < 4).length;
 
-      const high = results.filter(r => r.avg_score >= 7).length;
-      const mid = results.filter(r => r.avg_score >= 4 && r.avg_score < 7).length;
-      const low = results.filter(r => r.avg_score < 4).length;
-
-      document.getElementById('metric-high').textContent = high;
-      document.getElementById('metric-mid').textContent = mid;
-      document.getElementById('metric-low').textContent = low;
-
-      this.renderResultsList('all');
+      this.renderPaperCards('papers-list-all', results);
+      const minScore = parseInt(document.getElementById('min-score').value);
+      this.renderPaperCards('papers-list-top', results.filter(r => r.avg_score >= minScore), true);
+      this.renderDebateDetails('papers-list-debate', results);
     },
 
-    renderResultsList(filter) {
-      const container = document.getElementById('papers-list-container');
+    renderPaperCards(containerId, list, showTopBadge = false) {
+      const container = document.getElementById(containerId);
       container.innerHTML = '';
 
-      let list = [...this.currentResults];
-      if (filter === 'top') {
-        const minScore = parseInt(document.getElementById('min-score').value);
-        list = list.filter(r => r.avg_score >= minScore);
-      }
-
       if (!list.length) {
-        container.innerHTML = '<div class="card"><p>No papers match the selected filter.</p></div>';
+        container.innerHTML = '<p class="caption-muted">No papers match this threshold.</p>';
         return;
       }
 
       list.forEach(r => {
-        const card = document.createElement('div');
         const scoreClass = r.avg_score >= 7 ? 'score-high' : r.avg_score >= 4 ? 'score-mid' : 'score-low';
+        const badge = showTopBadge ? '⭐ ' : '';
+        const chipsHtml = (r.judge_scores || []).map(j => {
+          const cls = j.score >= 7 ? 'chip-high' : j.score >= 4 ? 'chip-mid' : 'chip-low';
+          return `<span class="judge-chip ${cls}">J${j.run}: ${j.score}</span>`;
+        }).join(' ');
 
-        let chipsHtml = '';
-        if (r.judge_scores) {
-          chipsHtml = r.judge_scores.map(j => {
-            const cls = j.score >= 7 ? 'high' : j.score >= 4 ? 'mid' : 'low';
-            return `<span class="judge-chip ${cls}">J${j.run}: ${j.score}</span>`;
-          }).join(' ');
-        }
-
-        let debatesHtml = '';
+        let roundsHtml = '';
         if (r.rounds) {
-          debatesHtml = r.rounds.map((rnd, i) => `
-            <div class="transcript-message advocate-msg">
-              <strong>🟢 Advocate (Round ${i + 1}):</strong><br/>${rnd.advocate}
+          roundsHtml = r.rounds.map((rnd, i) => `
+            <div class="chat-msg chat-advocate">
+              <strong>🟢 Advocate (Round ${i + 1})</strong><br/>${rnd.advocate}
             </div>
-            <div class="transcript-message skeptic-msg">
-              <strong>🔴 Skeptic (Round ${i + 1}):</strong><br/>${rnd.skeptic}
+            <div class="chat-msg chat-skeptic">
+              <strong>🔴 Skeptic (Round ${i + 1})</strong><br/>${rnd.skeptic}
             </div>
           `).join('');
         }
 
+        const card = document.createElement('div');
         card.className = 'paper-card';
         card.innerHTML = `
-          <div class="paper-header">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start">
             <div>
-              <div class="paper-title">${r.title}</div>
-              <small>👤 ${r.authors || 'Unknown'} | 📄 <a href="${r.url}" target="_blank" style="color:var(--accent-primary)">Open arXiv Paper</a></small>
+              <span class="${scoreClass}">${badge}${r.avg_score}/10</span>
+              &nbsp;&nbsp;<strong>${r.title}</strong><br/>
+              <span class="caption-muted">👤 ${r.authors || 'Unknown'} &nbsp;|&nbsp; 📅 ${r.published || ''}</span>
             </div>
-            <div class="paper-score-badge ${scoreClass}">${r.avg_score}/10</div>
           </div>
 
-          <div class="judge-chips">${chipsHtml}</div>
-          <p style="margin-top:0.5rem"><strong>Verdict:</strong> ${r.verdict}</p>
+          <div style="margin:0.75rem 0">${chipsHtml} &rarr; <strong>Avg: ${r.avg_score}</strong></div>
+          <p><strong>Verdict:</strong> ${r.verdict}</p>
           ${r.suggested_use ? `<p><small><strong>Suggested Use:</strong> ${r.suggested_use}</small></p>` : ''}
+          <div style="margin-top:0.75rem"><a href="${r.url}" target="_blank" class="st-btn st-btn-secondary" style="text-decoration:none">📄 Open Paper</a></div>
 
-          <details class="debate-transcript" style="margin-top:1rem">
-            <summary style="cursor:pointer;font-weight:600;color:var(--accent-primary)">🗣️ View Full Advocate/Skeptic Debate Transcripts</summary>
-            <div style="margin-top:0.75rem">${debatesHtml}</div>
+          <details style="margin-top:1rem">
+            <summary style="cursor:pointer;font-weight:600;color:var(--st-primary)">🗣️ Debate Transcripts & Judge Details</summary>
+            <div style="margin-top:0.75rem">${roundsHtml}</div>
           </details>
         `;
         container.appendChild(card);
       });
     },
 
-    // ── Schedules Management ──
+    renderDebateDetails(containerId, list) {
+      const container = document.getElementById(containerId);
+      container.innerHTML = '';
+      list.forEach(r => {
+        const icon = r.avg_score >= 7 ? '🟢' : r.avg_score >= 4 ? '🟡' : '🔴';
+        const card = document.createElement('div');
+        card.className = 'paper-card';
+        card.innerHTML = `
+          <h3>${icon} [${r.avg_score}/10] ${r.title}</h3>
+          <p><strong>Verdict:</strong> ${r.verdict}</p>
+        `;
+        container.appendChild(card);
+      });
+    },
+
+    // ── Schedules List ──
     async loadSchedules() {
       try {
         const res = await fetch('/api/schedules');
         const data = await res.json();
         this.currentSchedules = data.schedules || [];
         this.renderSchedules();
-      } catch (e) {
-        console.error('Failed to load schedules:', e);
-      }
+      } catch (e) { console.error('Load schedules error:', e); }
     },
 
     renderSchedules() {
-      const container = document.getElementById('schedules-list');
+      const container = document.getElementById('schedules-accordion-container');
       container.innerHTML = '';
 
       if (!this.currentSchedules.length) {
-        container.innerHTML = '<p class="text-muted">No recurring schedules created yet.</p>';
+        container.innerHTML = '<p class="caption-muted">No recurring schedules yet.</p>';
         return;
       }
 
       this.currentSchedules.forEach(s => {
+        const icon = s.is_active ? '🟢' : '⏸️';
         const card = document.createElement('div');
-        card.className = 'schedule-card';
-        const activeIcon = s.is_active ? '🟢 Active' : '⏸️ Paused';
-
+        card.className = 'paper-card';
         card.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.5rem">
-            <h3>${s.label || `Schedule #${s.id}`}</h3>
-            <span class="status-badge ${s.is_active ? 'badge-success' : 'badge-warning'}">${activeIcon}</span>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <h3>${icon} #${s.id} • ${s.label || `Schedule #${s.id}`} • ${s.run_time} daily</h3>
+            <div style="display:flex;gap:0.5rem">
+              <button class="st-btn st-btn-secondary btn-run-sch" data-id="${s.id}">▶️ Run Now</button>
+              <button class="st-btn st-btn-secondary btn-toggle-sch" data-id="${s.id}" data-active="${s.is_active}">${s.is_active ? '⏸️ Pause' : '▶️ Activate'}</button>
+              <button class="st-btn st-btn-secondary btn-edit-sch" data-id="${s.id}">✏️ Edit</button>
+              <button class="st-btn st-btn-secondary btn-del-sch" data-id="${s.id}" style="color:var(--st-red)">🗑️ Delete</button>
+            </div>
           </div>
-          <p><small><strong>Run Time:</strong> ${s.run_time} daily | <strong>Model:</strong> ${s.model_name}</small></p>
-          <p><small><strong>Fetch:</strong> ${s.fetch_mode === 'count' ? `${s.max_papers} papers` : `${s.days_back} days back`}</small></p>
-          <p style="margin:0.5rem 0;color:var(--text-secondary)"><small>${s.problem_text.substring(0, 100)}...</small></p>
-          <p><small class="text-muted">Last run: ${s.last_run_at || 'Never'} (${s.last_status || 'N/A'})</small></p>
-
-          <div style="display:flex;gap:0.5rem;margin-top:1rem">
-            <button class="btn btn-outline btn-sm btn-run-sch" data-id="${s.id}">▶️ Run Now</button>
-            <button class="btn btn-outline btn-sm btn-toggle-sch" data-id="${s.id}" data-active="${s.is_active}">${s.is_active ? '⏸️ Pause' : '▶️ Activate'}</button>
-            <button class="btn btn-outline btn-sm btn-edit-sch" data-id="${s.id}">✏️ Edit</button>
-            <button class="btn btn-danger btn-sm btn-del-sch" data-id="${s.id}">🗑️ Delete</button>
-          </div>
+          <p><small>Model: ${s.model_name} | Fetch: ${s.fetch_mode === 'count' ? `${s.max_papers} papers` : `${s.days_back} days`}</small></p>
+          <p><small>Problem: ${s.problem_text}</small></p>
         `;
         container.appendChild(card);
       });
 
-      // Bind actions
-      container.querySelectorAll('.btn-run-sch').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          const id = e.target.getAttribute('data-id');
-          await fetch(`/api/schedules/${id}/run`, { method: 'POST' });
-          alert(`Triggered background run for schedule #${id}!`);
+      container.querySelectorAll('.btn-run-sch').forEach(b => b.addEventListener('click', e => {
+        const id = e.target.getAttribute('data-id');
+        fetch(`/api/schedules/${id}/run`, { method: 'POST' });
+        alert(`Triggered background run for schedule #${id}!`);
+      }));
+
+      container.querySelectorAll('.btn-toggle-sch').forEach(b => b.addEventListener('click', async e => {
+        const id = e.target.getAttribute('data-id');
+        const active = e.target.getAttribute('data-active') === '1';
+        await fetch(`/api/schedules/${id}/toggle`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ active: !active }),
         });
-      });
-
-      container.querySelectorAll('.btn-toggle-sch').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          const id = e.target.getAttribute('data-id');
-          const active = e.target.getAttribute('data-active') === '1';
-          await fetch(`/api/schedules/${id}/toggle`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ active: !active }),
-          });
-          this.loadSchedules();
-        });
-      });
-
-      container.querySelectorAll('.btn-del-sch').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          const id = e.target.getAttribute('data-id');
-          if (confirm('Delete this recurring schedule?')) {
-            await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
-            this.loadSchedules();
-          }
-        });
-      });
-
-      container.querySelectorAll('.btn-edit-sch').forEach(btn => {
-        btn.addEventListener('click', (e) => {
-          const id = parseInt(e.target.getAttribute('data-id'));
-          const sch = this.currentSchedules.find(s => s.id === id);
-          if (sch) this.openScheduleModal(sch);
-        });
-      });
-    },
-
-    // ── Modal Handling ──
-    bindModalEvents() {
-      const modal = document.getElementById('schedule-modal');
-      document.getElementById('btn-open-create-schedule').addEventListener('click', () => {
-        this.openScheduleModal(null);
-      });
-      document.getElementById('btn-close-modal').addEventListener('click', () => modal.classList.add('hidden'));
-      document.getElementById('btn-cancel-modal').addEventListener('click', () => modal.classList.add('hidden'));
-
-      document.getElementById('schedule-form').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const schId = document.getElementById('sch-id').value;
-        const payload = {
-          label: document.getElementById('sch-label').value.trim(),
-          problem_text: document.getElementById('sch-problem').value.trim(),
-          model_name: document.getElementById('sch-model').value,
-          run_time: document.getElementById('sch-time').value,
-          max_papers: parseInt(document.getElementById('sch-max-papers').value) || 50,
-          keyword_filter: document.getElementById('sch-keyword').value.trim(),
-          fetch_mode: 'count',
-        };
-
-        if (schId) {
-          await fetch(`/api/schedules/${schId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-        } else {
-          await fetch('/api/schedules', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-        }
-
-        modal.classList.add('hidden');
         this.loadSchedules();
-      });
+      }));
+
+      container.querySelectorAll('.btn-del-sch').forEach(b => b.addEventListener('click', async e => {
+        const id = e.target.getAttribute('data-id');
+        if (confirm('Delete schedule?')) {
+          await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+          this.loadSchedules();
+        }
+      }));
+
+      container.querySelectorAll('.btn-edit-sch').forEach(b => b.addEventListener('click', e => {
+        const id = parseInt(e.target.getAttribute('data-id'));
+        const sch = this.currentSchedules.find(s => s.id === id);
+        if (sch) this.openEditModal(sch);
+      }));
     },
 
-    openScheduleModal(sch) {
-      const modal = document.getElementById('schedule-modal');
-      const title = document.getElementById('modal-title');
-      document.getElementById('sch-id').value = sch ? sch.id : '';
-      document.getElementById('sch-label').value = sch ? (sch.label || '') : '';
-      document.getElementById('sch-problem').value = sch ? sch.problem_text : (document.getElementById('problem-statement').value || '');
-      document.getElementById('sch-model').value = sch ? sch.model_name : 'gemini-3-pro-preview';
-      document.getElementById('sch-time').value = sch ? sch.run_time : '08:00';
-      document.getElementById('sch-max-papers').value = sch ? (sch.max_papers || 50) : 50;
-      document.getElementById('sch-keyword').value = sch ? (sch.keyword_filter || '') : '';
+    openEditModal(sch) {
+      document.getElementById('edit-sch-id').value = sch ? sch.id : '';
+      document.getElementById('edit-sch-label').value = sch ? (sch.label || '') : '';
+      document.getElementById('edit-sch-problem').value = sch ? sch.problem_text : (document.getElementById('problem-statement').value || '');
+      document.getElementById('edit-sch-model').value = sch ? sch.model_name : 'gemini-3-pro-preview';
+      document.getElementById('edit-sch-time').value = sch ? sch.run_time : '08:00';
+      document.getElementById('edit-sch-papers').value = sch ? (sch.max_papers || 50) : 50;
+      document.getElementById('edit-sch-keyword').value = sch ? (sch.keyword_filter || '') : '';
 
-      title.textContent = sch ? `✏️ Edit Schedule #${sch.id}` : '➕ Create Recurring Schedule';
-      modal.classList.remove('hidden');
+      document.getElementById('modal-edit-title').textContent = sch ? `✏️ Edit Schedule #${sch.id}` : '➕ Create Schedule';
+      document.getElementById('modal-edit-schedule').classList.remove('hidden');
     },
 
-    // ── History Tab ──
+    // ── History List ──
     async loadHistory() {
       try {
         const res = await fetch('/api/evaluations');
         const data = await res.json();
         this.pastEvaluations = data.evaluations || [];
         this.renderHistory();
-      } catch (e) {
-        console.error('Failed to load history:', e);
-      }
+      } catch (e) { console.error('Load history error:', e); }
     },
 
     renderHistory() {
-      const container = document.getElementById('history-evaluations-list');
+      const container = document.getElementById('history-list-container');
       container.innerHTML = '';
 
       if (!this.pastEvaluations.length) {
-        container.innerHTML = '<p class="text-muted">No past evaluations stored in SQLite database.</p>';
+        container.innerHTML = '<p class="caption-muted">No past evaluations stored in SQLite database.</p>';
         return;
       }
 
       this.pastEvaluations.forEach(ev => {
         const item = document.createElement('div');
-        item.className = 'card';
+        item.className = 'paper-card';
         item.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center">
             <h3>Evaluation #${ev.id} — ${ev.overall_avg || 0}/10 Overall</h3>
-            <button class="btn btn-danger btn-sm btn-del-eval" data-id="${ev.id}">🗑️ Delete</button>
+            <button class="st-btn st-btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--st-red)">🗑️ Delete</button>
           </div>
-          <p><strong>Problem:</strong> ${ev.problem_text}</p>
-          <p><small class="text-muted">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers: ${ev.paper_count}</small></p>
+          <p><strong>Research Problem:</strong> ${ev.problem_text}</p>
+          <p><small class="caption-muted">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers: ${ev.paper_count}</small></p>
         `;
         container.appendChild(item);
       });
 
-      container.querySelectorAll('.btn-del-eval').forEach(btn => {
-        btn.addEventListener('click', async (e) => {
-          const id = e.target.getAttribute('data-id');
-          if (confirm(`Delete evaluation #${id}?`)) {
-            await fetch(`/api/evaluations/${id}`, { method: 'DELETE' });
-            this.loadHistory();
-          }
-        });
-      });
+      container.querySelectorAll('.btn-del-eval').forEach(b => b.addEventListener('click', async e => {
+        const id = e.target.getAttribute('data-id');
+        if (confirm(`Delete evaluation #${id}?`)) {
+          await fetch(`/api/evaluations/${id}`, { method: 'DELETE' });
+          this.loadHistory();
+        }
+      }));
     },
   };
 

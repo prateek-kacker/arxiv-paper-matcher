@@ -3,220 +3,277 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>arXiv CS.CL Paper Matcher — Multi-Agent Research Evaluation</title>
+  <title>arXiv CS.CL Paper Matcher</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="app-container">
-    <!-- Header -->
-    <header class="app-header">
-      <div class="header-brand">
-        <div class="brand-icon">📚</div>
-        <div>
-          <h1>arXiv CS.CL Paper Matcher</h1>
-          <p class="brand-subtitle">Multi-Agent Debate • 5-Judge Panel • Gemini LLM • Persistence</p>
+  <div class="streamlit-container">
+    <!-- LEFT SIDEBAR -->
+    <aside class="sidebar">
+      <div class="sidebar-section">
+        <h2>⚙️ Settings</h2>
+        <div id="status-api-key" class="alert-box alert-success">🔑 API key loaded from Secret Manager</div>
+        <div id="status-cloud-sync" class="alert-box alert-info">💾 Persistent DB enabled</div>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="sidebar-section">
+        <h3>Webhook Output</h3>
+        <div class="form-group">
+          <label for="sidebar-webhook-url">Post output URL</label>
+          <input type="text" id="sidebar-webhook-url" placeholder="https://kackers.app/api/ingest" />
+        </div>
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="chk-auto-post" /> Auto-post completed evaluations</label>
+        </div>
+        <div class="checkbox-group">
+          <label><input type="checkbox" id="chk-auto-push-recurring" checked /> Auto-push recurring evaluations</label>
+        </div>
+        <div id="status-webhook-token" class="caption-muted">ℹ️ No webhook token set</div>
+      </div>
+
+      <hr class="divider" />
+
+      <div class="sidebar-section">
+        <div class="form-group">
+          <label for="model-name">Gemini Model</label>
+          <select id="model-name">
+            <option value="gemini-3-pro-preview" selected>gemini-3-pro-preview</option>
+            <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+            <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+            <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label>Fetch mode</label>
+          <div class="radio-inline">
+            <label><input type="radio" name="fetch-mode" value="count" checked /> By number of papers</label>
+            <label><input type="radio" name="fetch-mode" value="days" /> By last N days</label>
+          </div>
+        </div>
+
+        <div class="form-group" id="group-paper-count">
+          <label for="max-papers">Papers to fetch: <strong id="val-max-papers">50</strong></label>
+          <input type="range" id="max-papers" min="5" max="100" step="5" value="50" />
+        </div>
+
+        <div class="form-group hidden" id="group-days-back">
+          <label for="days-back">Papers from last N days: <strong id="val-days-back">7</strong></label>
+          <input type="range" id="days-back" min="1" max="90" step="1" value="7" />
+        </div>
+
+        <div class="form-group">
+          <label for="keyword-filter">Optional keyword filter</label>
+          <input type="text" id="keyword-filter" placeholder="e.g. summarization, translation" />
+          <small class="caption-muted">Extra arXiv search keywords (ANDed with cs.CL)</small>
+        </div>
+
+        <div class="form-group">
+          <label for="min-score">Min relevance score to highlight: <strong id="val-min-score">6</strong></label>
+          <input type="range" id="min-score" min="1" max="10" value="6" />
+        </div>
+
+        <div class="form-group">
+          <label for="max-concurrent">Parallel evaluations: <strong id="val-max-concurrent">3</strong></label>
+          <input type="range" id="max-concurrent" min="1" max="10" value="3" />
         </div>
       </div>
-      <div class="header-status">
-        <div id="status-api-key" class="status-badge badge-warning">🔑 Checking API Key...</div>
-        <div id="status-cloud-sync" class="status-badge badge-info">☁️ Checking Cloud Storage...</div>
+
+      <hr class="divider" />
+
+      <div class="sidebar-section info-box">
+        <h4>How it works</h4>
+        <ol>
+          <li>Fetches recent CS.CL papers from arXiv</li>
+          <li>For each paper, <strong>Advocate</strong> argues FOR</li>
+          <li><strong>Skeptic</strong> argues AGAINST (2 rounds)</li>
+          <li><strong>5 Judges</strong> independently score 1-10</li>
+          <li>Average score &rarr; final ranking</li>
+          <li>Everything stored in SQLite DB</li>
+        </ol>
       </div>
-    </header>
+    </aside>
 
-    <!-- Navigation Tabs -->
-    <nav class="app-nav">
-      <button class="nav-tab active" data-tab="tab-new-eval">
-        <span class="tab-icon">🔬</span> New Evaluation
-      </button>
-      <button class="nav-tab" data-tab="tab-schedules">
-        <span class="tab-icon">⏰</span> Recurring Schedules
-      </button>
-      <button class="nav-tab" data-tab="tab-history">
-        <span class="tab-icon">🗄️</span> Past Evaluations
-      </button>
-    </nav>
+    <!-- MAIN RIGHT CONTENT PANEL -->
+    <main class="main-panel">
+      <header class="main-header">
+        <h1>📚 arXiv CS.CL Paper Matcher</h1>
+        <p class="subtitle">Multi-Agent Debate &nbsp;•&nbsp; 5-Judge Panel &nbsp;•&nbsp; Gemini LLM &nbsp;•&nbsp; SQLite Persistence</p>
+      </header>
 
-    <!-- Main Content -->
-    <main class="app-content">
+      <!-- STREAMLIT PAGE TABS -->
+      <div class="tab-header">
+        <button class="st-tab active" data-tab="tab-new-eval">🔬 New Evaluation</button>
+        <button class="st-tab" data-tab="tab-recurring">⏰ Recurring Evaluations</button>
+        <button class="st-tab" data-tab="tab-history">🗄️ Past Evaluations</button>
+      </div>
+
       <!-- TAB 1: NEW EVALUATION -->
       <section id="tab-new-eval" class="tab-pane active">
-        <div class="grid-layout">
-          <!-- Configuration Card -->
-          <div class="card config-card">
-            <h2>⚙️ Evaluation Parameters</h2>
-            <form id="eval-form">
-              <div class="form-group">
-                <label for="problem-statement">🔬 Research Problem Description</label>
-                <textarea id="problem-statement" rows="5" placeholder="Describe your research topic, methodology needs, and domain focus..." required></textarea>
-              </div>
-
-              <div class="form-row">
-                <div class="form-group flex-1">
-                  <label for="model-name">Gemini Model</label>
-                  <select id="model-name">
-                    <option value="gemini-3-pro-preview" selected>gemini-3-pro-preview</option>
-                    <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-                    <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                    <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                    <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                  </select>
-                </div>
-
-                <div class="form-group flex-1">
-                  <label>Fetch Mode</label>
-                  <div class="radio-group">
-                    <label><input type="radio" name="fetch-mode" value="count" checked /> Paper Count</label>
-                    <label><input type="radio" name="fetch-mode" value="days" /> Date Range (Days)</label>
-                  </div>
-                </div>
-              </div>
-
-              <div class="form-row">
-                <div class="form-group flex-1" id="group-paper-count">
-                  <label for="max-papers">Papers to fetch: <span id="val-max-papers">50</span></label>
-                  <input type="range" id="max-papers" min="5" max="100" step="5" value="50" />
-                </div>
-                <div class="form-group flex-1 hidden" id="group-days-back">
-                  <label for="days-back">Days back: <span id="val-days-back">7</span></label>
-                  <input type="range" id="days-back" min="1" max="90" step="1" value="7" />
-                </div>
-              </div>
-
-              <div class="form-group">
-                <label for="keyword-filter">Optional Keyword Filter (ANDed with cs.CL)</label>
-                <input type="text" id="keyword-filter" placeholder="e.g. summarization, low-resource translation" />
-              </div>
-
-              <div class="form-row">
-                <div class="form-group flex-1">
-                  <label for="min-score">Min score highlight: <span id="val-min-score">6</span>/10</label>
-                  <input type="range" id="min-score" min="1" max="10" value="6" />
-                </div>
-                <div class="form-group flex-1">
-                  <label for="max-concurrent">Parallel Workers: <span id="val-max-concurrent">3</span></label>
-                  <input type="range" id="max-concurrent" min="1" max="10" value="3" />
-                </div>
-              </div>
-
-              <div class="button-group">
-                <button type="submit" id="btn-start-eval" class="btn btn-primary btn-lg">
-                  🚀 Start Live Evaluation
-                </button>
-                <button type="button" id="btn-fetch-only" class="btn btn-secondary">
-                  📡 Fetch Papers Only
-                </button>
-                <button type="button" id="btn-save-recurring" class="btn btn-accent">
-                  ⏰ Add to Recurring
-                </button>
-              </div>
-            </form>
-          </div>
-
-          <!-- Live Terminal / Stream Container -->
-          <div class="card stream-card">
-            <h2>📡 Live Execution Terminal</h2>
-            <div id="live-progress-bar" class="progress-bar-container hidden">
-              <div class="progress-fill" id="progress-fill" style="width: 0%"></div>
-            </div>
-            <div id="stream-status" class="stream-status">Ready. Enter research problem and click Start.</div>
-            <div id="stream-output" class="stream-log"></div>
-          </div>
+        <div class="form-group">
+          <label for="problem-statement" class="label-large">🔬 Describe your research problem</label>
+          <textarea id="problem-statement" rows="5" placeholder="Example: I am building a low-resource machine translation system for Indic languages and need methods that work well with limited parallel corpus data..."></textarea>
         </div>
 
-        <!-- Evaluation Results Section -->
-        <section id="results-section" class="results-section hidden">
-          <div class="metrics-row">
-            <div class="metric-card">
-              <span class="metric-value" id="metric-total">0</span>
-              <span class="metric-label">Total Papers</span>
-            </div>
-            <div class="metric-card metric-high">
-              <span class="metric-value" id="metric-high">0</span>
-              <span class="metric-label">🟢 High Relevance (7-10)</span>
-            </div>
-            <div class="metric-card metric-mid">
-              <span class="metric-value" id="metric-mid">0</span>
-              <span class="metric-label">🟡 Moderate (4-6)</span>
-            </div>
-            <div class="metric-card metric-low">
-              <span class="metric-value" id="metric-low">0</span>
-              <span class="metric-label">🔴 Low Relevance (1-3)</span>
-            </div>
+        <div class="form-group" style="max-width: 300px;">
+          <label for="recurring-time-new">Recurring run time (server local time)</label>
+          <input type="time" id="recurring-time-new" value="08:00" />
+        </div>
+
+        <div class="button-row">
+          <button id="btn-run-all" class="st-btn st-btn-primary">🚀 Fetch & Evaluate All</button>
+          <button id="btn-fetch-only" class="st-btn st-btn-secondary">📡 Fetch Papers Only</button>
+          <button id="btn-clear-results" class="st-btn st-btn-secondary">🗑️ Clear Results</button>
+          <button id="btn-add-recurring" class="st-btn st-btn-secondary">⏰ Add to Recurring</button>
+        </div>
+
+        <!-- Progress Status Container -->
+        <div id="status-container" class="status-box hidden">
+          <div id="status-text">📡 Fetching papers from arXiv CS.CL...</div>
+          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        </div>
+
+        <!-- Live Streaming / Paper Container -->
+        <div id="evaluation-stream-container"></div>
+
+        <!-- Evaluation Results Dashboard -->
+        <div id="results-dashboard" class="hidden">
+          <hr class="divider" />
+          <div class="metrics-dashboard">
+            <div class="metric-box"><span class="metric-num" id="metric-total">0</span><span class="metric-lbl">Total Papers</span></div>
+            <div class="metric-box metric-high"><span class="metric-num" id="metric-high">0</span><span class="metric-lbl">🟢 Highly Relevant (7-10)</span></div>
+            <div class="metric-box metric-mid"><span class="metric-num" id="metric-mid">0</span><span class="metric-lbl">🟡 Moderate (4-6)</span></div>
+            <div class="metric-box metric-low"><span class="metric-num" id="metric-low">0</span><span class="metric-lbl">🔴 Low Relevance (1-3)</span></div>
           </div>
 
-          <div class="results-toolbar">
-            <div class="view-filter-tabs">
-              <button class="filter-btn active" data-filter="all">📋 All Results</button>
-              <button class="filter-btn" data-filter="top">⭐ Top Matches Only</button>
-            </div>
-            <div class="export-actions">
-              <button id="btn-export-json" class="btn btn-outline">📥 Download JSON</button>
-            </div>
+          <!-- Sub-tabs for results -->
+          <div class="subtab-header">
+            <button class="subtab active" data-subtab="subtab-all">📋 All Results</button>
+            <button class="subtab" data-subtab="subtab-top">⭐ Top Matches</button>
+            <button class="subtab" data-subtab="subtab-debate">🗣️ Debate Details</button>
           </div>
 
-          <div id="papers-list-container" class="papers-list"></div>
-        </section>
+          <div id="subtab-all" class="subtab-pane active">
+            <div id="papers-list-all"></div>
+          </div>
+
+          <div id="subtab-top" class="subtab-pane">
+            <div id="papers-list-top"></div>
+          </div>
+
+          <div id="subtab-debate" class="subtab-pane">
+            <div id="papers-list-debate"></div>
+          </div>
+
+          <hr class="divider" />
+          <div class="export-row">
+            <button id="btn-download-json" class="st-btn st-btn-secondary">📥 Download Results (JSON)</button>
+            <button id="btn-post-webhook" class="st-btn st-btn-secondary">📤 Post Results to kackers.app</button>
+          </div>
+        </div>
       </section>
 
-      <!-- TAB 2: RECURRING SCHEDULES -->
-      <section id="tab-schedules" class="tab-pane">
-        <div class="card">
-          <div class="card-header-flex">
-            <div>
-              <h2>⏰ Recurring Schedules</h2>
-              <p class="subtitle">Cloud Run Jobs run due evaluations automatically even when your laptop is off.</p>
-            </div>
-            <button id="btn-open-create-schedule" class="btn btn-primary">➕ Create New Schedule</button>
-          </div>
+      <!-- TAB 2: RECURRING EVALUATIONS -->
+      <section id="tab-recurring" class="tab-pane">
+        <h2>⏰ Recurring Evaluations</h2>
+        <p class="caption-muted">Runs once per day at the configured time (server local time). Cloud Run Jobs execute due evaluations automatically.</p>
 
-          <div id="schedules-list" class="schedules-grid"></div>
+        <div id="bg-tasks-container"></div>
+
+        <div class="form-card" style="margin-top: 1.5rem;">
+          <h4>➕ Create Recurring Schedule</h4>
+          <form id="form-create-schedule">
+            <div class="form-group">
+              <label for="sch-label">Schedule label</label>
+              <input type="text" id="sch-label" placeholder="e.g. Daily MT Evaluation" required />
+            </div>
+            <div class="form-group">
+              <label for="sch-problem">Research problem</label>
+              <textarea id="sch-problem" rows="3" required></textarea>
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="sch-model">Gemini model</label>
+                <select id="sch-model">
+                  <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
+                  <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                  <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                  <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="sch-time">Daily run time (server local time)</label>
+                <input type="time" id="sch-time" value="08:00" required />
+              </div>
+            </div>
+            <div class="form-row-2">
+              <div class="form-group">
+                <label for="sch-papers">Papers to fetch</label>
+                <input type="number" id="sch-papers" value="50" min="5" max="100" />
+              </div>
+              <div class="form-group">
+                <label for="sch-keyword">Keyword filter</label>
+                <input type="text" id="sch-keyword" placeholder="e.g. summarization" />
+              </div>
+            </div>
+            <button type="submit" class="st-btn st-btn-primary">➕ Create Schedule</button>
+          </form>
         </div>
+
+        <hr class="divider" />
+        <h4>📋 Existing Schedules</h4>
+        <div id="schedules-accordion-container"></div>
       </section>
 
       <!-- TAB 3: PAST EVALUATIONS HISTORY -->
       <section id="tab-history" class="tab-pane">
-        <div class="card">
-          <h2>🗄️ Past Evaluations History</h2>
-          <div class="history-toolbar">
-            <input type="text" id="history-search" placeholder="🔍 Search past evaluations by problem text, title, author..." />
-            <select id="history-filter-score">
-              <option value="all">All Scores</option>
-              <option value="high">🟢 High (7-10)</option>
+        <h2>🗄️ Past Evaluations</h2>
+        <div class="filter-card">
+          <h4>🔍 Filters</h4>
+          <div class="form-row-2">
+            <input type="text" id="history-search" placeholder="Search by paper title, author, abstract or problem..." />
+            <select id="history-score-filter">
+              <option value="all">All relevance scores</option>
+              <option value="high">🟢 High Relevance (7-10)</option>
               <option value="mid">🟡 Moderate (4-6)</option>
-              <option value="low">🔴 Low (1-3)</option>
+              <option value="low">🔴 Low Relevance (1-3)</option>
             </select>
           </div>
-
-          <div id="history-evaluations-list" class="history-list"></div>
         </div>
+
+        <div id="history-list-container" style="margin-top: 1.5rem;"></div>
       </section>
     </main>
   </div>
 
-  <!-- EDIT / CREATE SCHEDULE MODAL -->
-  <div id="schedule-modal" class="modal-overlay hidden">
-    <div class="modal-card">
+  <!-- EDIT SCHEDULE MODAL -->
+  <div id="modal-edit-schedule" class="modal-overlay hidden">
+    <div class="modal-content">
       <div class="modal-header">
-        <h3 id="modal-title">➕ Create Recurring Schedule</h3>
-        <button id="btn-close-modal" class="btn-icon">&times;</button>
+        <h3 id="modal-edit-title">✏️ Edit Schedule</h3>
+        <button id="btn-close-modal" class="close-btn">&times;</button>
       </div>
-      <form id="schedule-form">
-        <input type="hidden" id="sch-id" />
+      <form id="form-edit-schedule">
+        <input type="hidden" id="edit-sch-id" />
         <div class="form-group">
-          <label for="sch-label">Schedule Label</label>
-          <input type="text" id="sch-label" placeholder="e.g. Daily MT Evaluation" required />
+          <label for="edit-sch-label">Schedule label</label>
+          <input type="text" id="edit-sch-label" required />
         </div>
         <div class="form-group">
-          <label for="sch-problem">Research Problem</label>
-          <textarea id="sch-problem" rows="4" required></textarea>
+          <label for="edit-sch-problem">Research problem</label>
+          <textarea id="edit-sch-problem" rows="3" required></textarea>
         </div>
-        <div class="form-row">
-          <div class="form-group flex-1">
-            <label for="sch-model">Gemini Model</label>
-            <select id="sch-model">
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="edit-sch-model">Gemini model</label>
+            <select id="edit-sch-model">
               <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
               <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
               <option value="gemini-2.5-pro">gemini-2.5-pro</option>
@@ -224,24 +281,24 @@
               <option value="gemini-2.0-flash">gemini-2.0-flash</option>
             </select>
           </div>
-          <div class="form-group flex-1">
-            <label for="sch-time">Daily Run Time (HH:MM)</label>
-            <input type="time" id="sch-time" value="08:00" required />
+          <div class="form-group">
+            <label for="edit-sch-time">Daily run time (server local time)</label>
+            <input type="time" id="edit-sch-time" required />
           </div>
         </div>
-        <div class="form-row">
-          <div class="form-group flex-1">
-            <label for="sch-max-papers">Papers Count</label>
-            <input type="number" id="sch-max-papers" min="5" max="100" value="50" />
+        <div class="form-row-2">
+          <div class="form-group">
+            <label for="edit-sch-papers">Papers count</label>
+            <input type="number" id="edit-sch-papers" min="5" max="100" />
           </div>
-          <div class="form-group flex-1">
-            <label for="sch-keyword">Keyword Filter</label>
-            <input type="text" id="sch-keyword" placeholder="e.g. translation" />
+          <div class="form-group">
+            <label for="edit-sch-keyword">Keyword filter</label>
+            <input type="text" id="edit-sch-keyword" />
           </div>
         </div>
         <div class="modal-footer">
-          <button type="button" id="btn-cancel-modal" class="btn btn-secondary">Cancel</button>
-          <button type="submit" class="btn btn-primary">💾 Save Schedule</button>
+          <button type="button" id="btn-cancel-edit" class="st-btn st-btn-secondary">Cancel</button>
+          <button type="submit" class="st-btn st-btn-primary">💾 Save Changes</button>
         </div>
       </form>
     </div>
