@@ -164,7 +164,7 @@ async def api_evaluate_stream(request: Request):
     max_concurrent = int(data.get("max_concurrent", 3))
 
     paper_source = data.get("paper_source", "arxiv")
-    acl_year = data.get("acl_year", "2024")
+    acl_track = data.get("acl_track", "all")
 
     if not api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
@@ -174,14 +174,15 @@ async def api_evaluate_stream(request: Request):
     async def event_generator():
         try:
             if paper_source == "acl":
+                track_label = acl_track.upper() if acl_track != "all" else "ALL 2026"
                 yield {
                     "event": "stage",
-                    "data": json.dumps({"stage": "fetching", "message": f"Fetching papers from ACL Anthology ({acl_year} Long Papers)..."})
+                    "data": json.dumps({"stage": "fetching", "message": f"Fetching papers from ACL 2026 Anthology ({track_label} Track)..."})
                 }
                 papers = fetch_acl_papers(
                     max_results=max_papers,
                     search_query=keyword_filter,
-                    event_year=acl_year,
+                    volume_filter=acl_track,
                 )
             else:
                 yield {

@@ -99,13 +99,13 @@ document.addEventListener('DOMContentLoaded', () => {
       bindVal('min-score', 'val-min-score');
       bindVal('max-concurrent', 'val-max-concurrent');
 
-      // Paper Source Change Control (arXiv vs ACL)
+      // Paper Source Change Control (arXiv vs ACL 2026)
       const paperSourceSelect = document.getElementById('paper-source');
       if (paperSourceSelect) {
         paperSourceSelect.addEventListener('change', (e) => {
           const isAcl = e.target.value === 'acl';
-          const groupAclYear = document.getElementById('group-acl-year');
-          if (groupAclYear) groupAclYear.classList.toggle('hidden', !isAcl);
+          const groupAclTrack = document.getElementById('group-acl-track');
+          if (groupAclTrack) groupAclTrack.classList.toggle('hidden', !isAcl);
         });
       }
 
@@ -271,7 +271,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const model = document.getElementById('model-name').value;
       const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
-      const aclYear = document.getElementById('acl-year')?.value || '2024';
+      const aclTrack = document.getElementById('acl-track')?.value || 'all';
 
       const fetchMode = document.querySelector('input[name="fetchmode"]:checked').value;
       const maxPapers = fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null;
@@ -291,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       progressCard.classList.remove('hidden');
       progressStage.textContent = paperSource === 'acl'
-        ? `Fetching papers from ACL Anthology (${aclYear} Long Papers)...`
+        ? `Fetching papers from ACL 2026 Anthology (${aclTrack.toUpperCase()} Track)...`
         : 'Fetching papers from arXiv CS.CL...';
       progressFill.style.width = '0%';
       dashboard.classList.add('hidden');
@@ -308,7 +308,7 @@ document.addEventListener('DOMContentLoaded', () => {
             problem_statement: problem,
             model_name: model,
             paper_source: paperSource,
-            acl_year: aclYear,
+            acl_track: aclTrack,
             max_papers: maxPapers,
             days_back: daysBack,
             keyword_filter: keyword,
