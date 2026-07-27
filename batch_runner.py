@@ -6,33 +6,31 @@ Executed periodically (e.g., via GCP Cloud Run Jobs + Cloud Scheduler) to run du
 recurring evaluations without needing a browser or desktop UI.
 
 Results are persisted into SQLite (`paper_matcher.db`) and uploaded to Cloud Storage
-(GCS / S3), making them immediately visible in the Streamlit app when opened on laptop.
+(GCS / S3), making them immediately visible in the web app.
 """
 
 import sys
 import os
 import argparse
-import importlib
 from datetime import datetime
 from pathlib import Path
 
 # Add project directory to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-# Dynamically import module with hyphens in name
-debate_mod = importlib.import_module("Archive_research_multi-agent_debate")
-
-sync_db_from_cloud = debate_mod.sync_db_from_cloud
-sync_db_to_cloud = debate_mod.sync_db_to_cloud
-init_db = debate_mod.init_db
-load_due_recurring_schedules = debate_mod.load_due_recurring_schedules
-load_recurring_schedules = debate_mod.load_recurring_schedules
-_run_evaluation_headless = debate_mod._run_evaluation_headless
-update_schedule_last_run = debate_mod.update_schedule_last_run
-_post_results_to_webhook = debate_mod._post_results_to_webhook
-DB_PATH = debate_mod.DB_PATH
-DB_GCS_BUCKET = debate_mod.DB_GCS_BUCKET
-AWS_S3_BUCKET = debate_mod.AWS_S3_BUCKET
+from core_engine import (
+    sync_db_from_cloud,
+    sync_db_to_cloud,
+    init_db,
+    load_due_recurring_schedules,
+    load_recurring_schedules,
+    _run_evaluation_headless,
+    update_schedule_last_run,
+    _post_results_to_webhook,
+    DB_PATH,
+    DB_GCS_BUCKET,
+    AWS_S3_BUCKET,
+)
 
 
 def log(msg: str):
@@ -144,7 +142,6 @@ def main():
             )
             success_count += 1
 
-            # Webhook auto-push if configured
             if auto_push and webhook_url:
                 log("   🌐 Posting results to Webhook...")
                 post_ok, post_msg = _post_results_to_webhook(

@@ -9,8 +9,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY Archive_research_multi-agent_debate.py batch_runner.py ./
+COPY core_engine.py server.py batch_runner.py Archive_research_multi-agent_debate.py ./
+COPY static ./static
 
 EXPOSE 8080
 
-CMD ["sh", "-c", "streamlit run Archive_research_multi-agent_debate.py --server.address 0.0.0.0 --server.port ${PORT:-8080} --server.headless true --browser.gatherUsageStats false --server.enableCORS false --server.enableXsrfProtection false"]
+CMD ["sh", "-c", "uvicorn server:app --host 0.0.0.0 --port ${PORT:-8080}"]
