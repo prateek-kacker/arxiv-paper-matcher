@@ -8,6 +8,7 @@ document.addEventListener('DOMContentLoaded', () => {
     currentResults: [],
     currentSchedules: [],
     pastEvaluations: [],
+    abortController: null,
 
     init() {
       this.bindTabNavigation();
@@ -102,6 +103,25 @@ document.addEventListener('DOMContentLoaded', () => {
       // Evaluation Action Buttons
       document.getElementById('btn-run-all').addEventListener('click', () => this.startLiveStreamEvaluation());
 
+      document.getElementById('btn-stop-eval').addEventListener('click', () => {
+        if (this.abortController) {
+          this.abortController.abort();
+          this.abortController = null;
+        }
+        const progressStage = document.getElementById('progress-stage');
+        const btnRunAll = document.getElementById('btn-run-all');
+        const btnStop = document.getElementById('btn-stop-eval');
+
+        if (progressStage) progressStage.textContent = '🛑 Evaluation stopped by user.';
+        if (btnRunAll) btnRunAll.classList.remove('hidden');
+        if (btnStop) btnStop.classList.add('hidden');
+
+        if (this.currentResults && this.currentResults.length) {
+          this.renderResultsDashboard();
+        }
+        this.loadHistory();
+      });
+
       document.getElementById('btn-clear-results').addEventListener('click', () => {
         this.currentResults = [];
         document.getElementById('dashboard-container').classList.add('hidden');
@@ -193,10 +213,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const keyword = document.getElementById('keyword-filter').value.trim();
       const concurrent = parseInt(document.getElementById('max-concurrent').value);
 
+      const btnRunAll = document.getElementById('btn-run-all');
+      const btnStop = document.getElementById('btn-stop-eval');
       const progressCard = document.getElementById('progress-card');
       const progressStage = document.getElementById('progress-stage');
       const progressFill = document.getElementById('progress-fill');
       const dashboard = document.getElementById('dashboard-container');
+
+      btnRunAll.classList.add('hidden');
+      btnStop.classList.remove('hidden');
 
       progressCard.classList.remove('hidden');
       progressStage.textContent = 'Fetching papers from arXiv CS.CL...';
@@ -204,10 +229,13 @@ document.addEventListener('DOMContentLoaded', () => {
       dashboard.classList.add('hidden');
       this.currentResults = [];
 
+      this.abortController = new AbortController();
+
       try {
         const response = await fetch('/api/evaluate/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: this.abortController.signal,
           body: JSON.stringify({
             problem_statement: problem,
             model_name: model,
@@ -254,7 +282,15 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
       } catch (e) {
-        progressStage.textContent = `❌ Stream error: ${e.message}`;
+        if (e.name === 'AbortError') {
+          progressStage.textContent = '🛑 Evaluation stopped by user.';
+        } else {
+          progressStage.textContent = `❌ Stream error: ${e.message}`;
+        }
+      } finally {
+        btnRunAll.classList.remove('hidden');
+        btnStop.classList.add('hidden');
+        this.abortController = null;
       }
     },
 

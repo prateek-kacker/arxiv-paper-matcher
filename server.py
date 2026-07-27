@@ -205,6 +205,10 @@ async def api_evaluate_stream(request: Request):
 
         results = []
         for idx, paper in enumerate(papers, 1):
+            if await request.is_disconnected():
+                print(f"[SSE] Client disconnected. Stopping evaluation loop at paper {idx}/{len(papers)} for eval_id={eval_id}", flush=True)
+                break
+
             yield {
                 "event": "paper_start",
                 "data": json.dumps({
