@@ -1,47 +1,68 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>arXiv CS.CL Paper Matcher</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@300;400;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
-  <div class="streamlit-container">
-    <!-- LEFT SIDEBAR -->
+  <div class="app-viewport">
+
+    <!-- ================= SIDEBAR ================= -->
     <aside class="sidebar">
-      <div class="sidebar-section">
-        <h2>⚙️ Settings</h2>
-        <div id="status-api-key" class="alert-box alert-success">🔑 API key loaded from Secret Manager</div>
-        <div id="status-cloud-sync" class="alert-box alert-info">💾 Persistent DB enabled</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="6" x2="20" y2="6"></line><circle cx="9" cy="6" r="2"></circle><line x1="4" y1="12" x2="20" y2="12"></line><circle cx="15" cy="12" r="2"></circle><line x1="4" y1="18" x2="20" y2="18"></line><circle cx="7" cy="18" r="2"></circle></svg>
+        <h4 style="margin:0">Configuration</h4>
       </div>
 
-      <hr class="divider" />
-
-      <div class="sidebar-section">
-        <h3>Webhook Output</h3>
-        <div class="form-group">
-          <label for="sidebar-webhook-url">Post output URL</label>
-          <input type="text" id="sidebar-webhook-url" placeholder="https://kackers.app/api/ingest" />
+      <!-- Section A: Status -->
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--color-bg);border:1px solid var(--color-divider)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="oklch(42% 0.15 155)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><circle cx="8" cy="15" r="4"></circle><line x1="10.8" y1="12.2" x2="20" y2="3"></line><line x1="16" y1="7" x2="19" y2="10"></line><line x1="13" y1="10" x2="16" y2="13"></line></svg>
+          <span id="status-api-key" style="font-size:12.5px">API key loaded from Secret Manager</span>
         </div>
-        <div class="checkbox-group">
-          <label><input type="checkbox" id="chk-auto-post" /> Auto-post completed evaluations</label>
+        <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:var(--color-bg);border:1px solid var(--color-divider)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex:none;opacity:.7"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"></path><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"></path></svg>
+          <span id="status-cloud-sync" style="font-size:12.5px">Persistent DB: paper_matcher.db</span>
         </div>
-        <div class="checkbox-group">
-          <label><input type="checkbox" id="chk-auto-push-recurring" checked /> Auto-push recurring evaluations</label>
-        </div>
-        <div id="status-webhook-token" class="caption-muted">ℹ️ No webhook token set</div>
       </div>
 
-      <hr class="divider" />
+      <div class="hr" style="margin:0"></div>
 
-      <div class="sidebar-section">
-        <div class="form-group">
-          <label for="model-name">Gemini Model</label>
-          <select id="model-name">
+      <!-- Section B: Webhook Output -->
+      <div style="display:flex;flex-direction:column;gap:10px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="9" width="9" height="6" rx="1"></rect><rect x="13" y="9" width="9" height="6" rx="1"></rect><line x1="11" y1="12" x2="13" y2="12"></line></svg>
+          <h6 style="margin:0;opacity:.7">Webhook Output</h6>
+        </div>
+        <div class="field">
+          <label>Post output URL</label>
+          <input id="webhook-url" class="input" type="text" placeholder="https://kackers.app/api/ingest" />
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="chk-auto-post" />
+          Auto-post completed evaluations
+        </label>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;cursor:pointer">
+          <input type="checkbox" id="chk-auto-push-recurring" checked />
+          Auto-push recurring evaluations
+        </label>
+        <p style="font-size:11px;opacity:.55;margin:0">Webhook token status: configured</p>
+      </div>
+
+      <div class="hr" style="margin:0"></div>
+
+      <!-- Section C: Model & Search Controls -->
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="12" y1="1" x2="12" y2="4"></line><line x1="12" y1="20" x2="12" y2="23"></line><line x1="1" y1="12" x2="4" y2="12"></line><line x1="20" y1="12" x2="23" y2="12"></line></svg>
+          <h6 style="margin:0;opacity:.7">Model &amp; Search</h6>
+        </div>
+
+        <div class="field">
+          <label>Gemini Model</label>
+          <select id="model-name" class="input">
             <option value="gemini-3-pro-preview" selected>gemini-3-pro-preview</option>
             <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
             <option value="gemini-2.5-pro">gemini-2.5-pro</option>
@@ -50,230 +71,261 @@
           </select>
         </div>
 
-        <div class="form-group">
+        <div class="field">
           <label>Fetch mode</label>
-          <div class="radio-inline">
-            <label><input type="radio" name="fetch-mode" value="count" checked /> By number of papers</label>
-            <label><input type="radio" name="fetch-mode" value="days" /> By last N days</label>
+          <div class="seg" style="width:100%">
+            <label class="seg-opt" style="flex:1;justify-content:center">
+              <input type="radio" name="fetchmode" value="count" checked />
+              By number of papers
+            </label>
+            <label class="seg-opt" style="flex:1;justify-content:center">
+              <input type="radio" name="fetchmode" value="days" />
+              By last N days
+            </label>
           </div>
         </div>
 
-        <div class="form-group" id="group-paper-count">
-          <label for="max-papers">Papers to fetch: <strong id="val-max-papers">50</strong></label>
-          <input type="range" id="max-papers" min="5" max="100" step="5" value="50" />
+        <div class="field" id="group-paper-count">
+          <label>Papers to fetch — <span id="val-max-papers">50</span></label>
+          <input type="range" id="max-papers" min="5" max="100" step="5" value="50" style="width:100%" />
         </div>
 
-        <div class="form-group hidden" id="group-days-back">
-          <label for="days-back">Papers from last N days: <strong id="val-days-back">7</strong></label>
-          <input type="range" id="days-back" min="1" max="90" step="1" value="7" />
+        <div class="field hidden" id="group-days-back">
+          <label>Papers from last N days — <span id="val-days-back">7</span></label>
+          <input type="range" id="days-back" min="1" max="90" step="1" value="7" style="width:100%" />
         </div>
 
-        <div class="form-group">
-          <label for="keyword-filter">Optional keyword filter</label>
-          <input type="text" id="keyword-filter" placeholder="e.g. summarization, translation" />
-          <small class="caption-muted">Extra arXiv search keywords (ANDed with cs.CL)</small>
+        <div class="field">
+          <label>Optional keyword filter</label>
+          <input id="keyword-filter" class="input" type="text" placeholder="e.g. summarization, translation" />
         </div>
 
-        <div class="form-group">
-          <label for="min-score">Min relevance score to highlight: <strong id="val-min-score">6</strong></label>
-          <input type="range" id="min-score" min="1" max="10" value="6" />
+        <div class="field">
+          <label>Min relevance score to highlight — <span id="val-min-score">6</span></label>
+          <input type="range" id="min-score" min="1" max="10" step="1" value="6" style="width:100%" />
         </div>
 
-        <div class="form-group">
-          <label for="max-concurrent">Parallel evaluations: <strong id="val-max-concurrent">3</strong></label>
-          <input type="range" id="max-concurrent" min="1" max="10" value="3" />
+        <div class="field">
+          <label>Parallel evaluations — <span id="val-max-concurrent">3</span></label>
+          <input type="range" id="max-concurrent" min="1" max="10" step="1" value="3" style="width:100%" />
         </div>
       </div>
 
-      <hr class="divider" />
+      <div class="hr" style="margin:0"></div>
 
-      <div class="sidebar-section info-box">
-        <h4>How it works</h4>
-        <ol>
+      <!-- Section D: How It Works -->
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="11" x2="12" y2="16"></line><circle cx="12" cy="8" r="0.6" fill="currentColor" stroke="none"></circle></svg>
+          <h6 style="margin:0;opacity:.7">How It Works</h6>
+        </div>
+        <ol style="margin:0;padding-left:18px;font-size:12.5px;line-height:1.7;opacity:.85">
           <li>Fetches recent CS.CL papers from arXiv</li>
-          <li>For each paper, <strong>Advocate</strong> argues FOR</li>
-          <li><strong>Skeptic</strong> argues AGAINST (2 rounds)</li>
-          <li><strong>5 Judges</strong> independently score 1-10</li>
-          <li>Average score &rarr; final ranking</li>
-          <li>Everything stored in SQLite DB</li>
+          <li><strong>Advocate</strong> argues FOR relevance</li>
+          <li><strong>Skeptic</strong> argues AGAINST relevance (2 rounds)</li>
+          <li><strong>5 Judges</strong> independently score (1–10)</li>
+          <li>Average score → final ranking</li>
+          <li>Persisted in SQLite DB</li>
         </ol>
       </div>
     </aside>
 
-    <!-- MAIN RIGHT CONTENT PANEL -->
+    <!-- ================= MAIN PANEL ================= -->
     <main class="main-panel">
-      <header class="main-header">
-        <h1>📚 arXiv CS.CL Paper Matcher</h1>
-        <p class="subtitle">Multi-Agent Debate &nbsp;•&nbsp; 5-Judge Panel &nbsp;•&nbsp; Gemini LLM &nbsp;•&nbsp; SQLite Persistence</p>
-      </header>
+      <div class="main-container">
+        <div>
+          <h1 style="font-size:30px;margin:0 0 4px">arXiv CS.CL Paper Matcher</h1>
+          <p style="margin:0;opacity:.6;font-size:14px">Multi-agent debate &amp; scoring for computational-linguistics literature</p>
+        </div>
 
-      <!-- STREAMLIT PAGE TABS -->
-      <div class="tab-header">
-        <button class="st-tab active" data-tab="tab-new-eval">🔬 New Evaluation</button>
-        <button class="st-tab" data-tab="tab-recurring">⏰ Recurring Evaluations</button>
-        <button class="st-tab" data-tab="tab-history">🗄️ Past Evaluations</button>
+        <!-- Navigation Tabs -->
+        <div class="tabs-header">
+          <button class="tab-btn active" data-tab="tab-new-eval">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3h6"></path><path d="M10 3v6l-5.5 9.5A2 2 0 0 0 6.2 21h11.6a2 2 0 0 0 1.7-3L14 9V3"></path></svg>
+            New Eval
+          </button>
+          <button class="tab-btn" data-tab="tab-recurring">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12,7 12,12 16,14"></polyline></svg>
+            Recurring
+          </button>
+          <button class="tab-btn" data-tab="tab-history">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"></ellipse><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"></path><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"></path></svg>
+            History
+          </button>
+        </div>
+
+        <!-- ============ TAB 1: NEW EVAL ============ -->
+        <section id="tab-new-eval" class="tab-pane active">
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <div class="card elev-sm" style="gap:14px">
+              <div class="field" style="margin:0">
+                <label>Describe your research problem</label>
+                <textarea id="problem-statement" class="input" style="height:150px" placeholder="Example: I am building a low-resource machine translation system for Indic languages and need methods that work well with limited parallel corpus data..."></textarea>
+              </div>
+              <div class="field" style="max-width:260px;margin:0">
+                <label>Recurring run time (server local time)</label>
+                <input id="recurring-time" class="input" type="time" value="08:00" />
+              </div>
+              <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:4px">
+                <button id="btn-run-all" class="btn btn-primary">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="3"></line><polygon points="21,3 14,21 11,13 3,10"></polygon></svg>
+                  Fetch &amp; Evaluate All
+                </button>
+                <button id="btn-fetch-only" class="btn btn-secondary">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"></circle><path d="M8.5 15.5a5 5 0 0 1 0-7"></path><path d="M15.5 8.5a5 5 0 0 1 0 7"></path><path d="M5.5 18.5a9 9 0 0 1 0-13"></path><path d="M18.5 5.5a9 9 0 0 1 0 13"></path></svg>
+                  Fetch Papers Only
+                </button>
+                <button id="btn-clear-results" class="btn btn-secondary">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"></line><path d="M6 7v13a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7"></path><path d="M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3"></path></svg>
+                  Clear Results
+                </button>
+                <button id="btn-add-recurring" class="btn btn-secondary">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><polyline points="12,7 12,12 16,14"></polyline></svg>
+                  Add to Recurring
+                </button>
+              </div>
+            </div>
+
+            <!-- Live Progress Bar Card -->
+            <div id="progress-card" class="card elev-sm hidden" style="gap:10px">
+              <div style="height:8px;background:var(--color-neutral-200);width:100%;position:relative;overflow:hidden">
+                <div id="progress-fill" style="height:100%;background:var(--color-accent);width:0%;transition:width 0.3s ease"></div>
+              </div>
+              <p id="progress-stage" style="margin:0;font-size:13px;opacity:.75">Initializing...</p>
+            </div>
+
+            <!-- Dashboard Results Container -->
+            <div id="dashboard-container" class="hidden" style="display:flex;flex-direction:column;gap:20px">
+              <!-- Metrics grid -->
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:2px;background:var(--color-divider);border:2px solid var(--color-divider)">
+                <div style="background:var(--color-surface);padding:16px">
+                  <div style="font-size:11px;opacity:.6;text-transform:uppercase;letter-spacing:.06em">Total Papers</div>
+                  <div id="metric-total" style="font-family:var(--font-heading);font-weight:800;font-size:30px">0</div>
+                </div>
+                <div style="background:var(--color-surface);padding:16px">
+                  <div style="font-size:11px;opacity:.6;text-transform:uppercase;letter-spacing:.06em">Highly Relevant (7–10)</div>
+                  <div id="metric-high" style="font-family:var(--font-heading);font-weight:800;font-size:30px;color:oklch(42% 0.15 155)">0</div>
+                </div>
+                <div style="background:var(--color-surface);padding:16px">
+                  <div style="font-size:11px;opacity:.6;text-transform:uppercase;letter-spacing:.06em">Moderate (4–6)</div>
+                  <div id="metric-mid" style="font-family:var(--font-heading);font-weight:800;font-size:30px;color:oklch(42% 0.13 80)">0</div>
+                </div>
+                <div style="background:var(--color-surface);padding:16px">
+                  <div style="font-size:11px;opacity:.6;text-transform:uppercase;letter-spacing:.06em">Low Relevance (1–3)</div>
+                  <div id="metric-low" style="font-family:var(--font-heading);font-weight:800;font-size:30px;color:var(--color-accent-700)">0</div>
+                </div>
+              </div>
+
+              <!-- Sub-tabs -->
+              <div class="subtabs-header">
+                <button class="subtab-btn active" data-subtab="subtab-all">All Results</button>
+                <button class="subtab-btn" data-subtab="subtab-top">Top Matches</button>
+                <button class="subtab-btn" data-subtab="subtab-debate">Debate Details</button>
+              </div>
+
+              <div id="subtab-all" class="subtab-pane active">
+                <div id="papers-list-all" style="display:flex;flex-direction:column;gap:16px"></div>
+              </div>
+              <div id="subtab-top" class="subtab-pane">
+                <div id="papers-list-top" style="display:flex;flex-direction:column;gap:16px"></div>
+              </div>
+              <div id="subtab-debate" class="subtab-pane">
+                <div id="papers-list-debate" style="display:flex;flex-direction:column;gap:16px"></div>
+              </div>
+
+              <!-- Export Toolbar -->
+              <div style="display:flex;gap:12px;margin-top:12px">
+                <button id="btn-export-json" class="btn btn-secondary">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                  Download Results (JSON)
+                </button>
+                <button id="btn-post-webhook" class="btn btn-secondary">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+                  Post Results to kackers.app
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ TAB 2: RECURRING ============ -->
+        <section id="tab-recurring" class="tab-pane">
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <div class="card elev-sm">
+              <h5 style="margin:0 0 12px">➕ Create Schedule</h5>
+              <form id="form-schedule" style="display:flex;flex-direction:column;gap:12px">
+                <div class="field">
+                  <label>Schedule label</label>
+                  <input id="sch-label" class="input" type="text" placeholder="e.g. Daily MT Evaluation" required />
+                </div>
+                <div class="field">
+                  <label>Research problem</label>
+                  <textarea id="sch-problem" class="input" style="height:90px" required></textarea>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                  <div class="field">
+                    <label>Gemini Model</label>
+                    <select id="sch-model" class="input">
+                      <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
+                      <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
+                      <option value="gemini-2.5-pro">gemini-2.5-pro</option>
+                      <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                      <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <label>Daily run time</label>
+                    <input id="sch-time" class="input" type="time" value="08:00" required />
+                  </div>
+                </div>
+                <button type="submit" class="btn btn-primary" style="align-self:flex-start">Create Schedule</button>
+              </form>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:12px">
+              <h5 style="margin:0">Existing Schedules</h5>
+              <div id="schedules-list" style="display:flex;flex-direction:column;gap:12px"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ============ TAB 3: HISTORY ============ -->
+        <section id="tab-history" class="tab-pane">
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <div class="card elev-sm" style="flex-direction:row;gap:12px">
+              <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or problem..." style="flex:1" />
+              <select id="history-filter-score" class="input" style="width:200px">
+                <option value="all">All relevance scores</option>
+                <option value="high">🟢 High (7-10)</option>
+                <option value="mid">🟡 Moderate (4-6)</option>
+                <option value="low">🔴 Low (1-3)</option>
+              </select>
+            </div>
+            <div id="history-list" style="display:flex;flex-direction:column;gap:12px"></div>
+          </div>
+        </section>
       </div>
-
-      <!-- TAB 1: NEW EVALUATION -->
-      <section id="tab-new-eval" class="tab-pane active">
-        <div class="form-group">
-          <label for="problem-statement" class="label-large">🔬 Describe your research problem</label>
-          <textarea id="problem-statement" rows="5" placeholder="Example: I am building a low-resource machine translation system for Indic languages and need methods that work well with limited parallel corpus data..."></textarea>
-        </div>
-
-        <div class="form-group" style="max-width: 300px;">
-          <label for="recurring-time-new">Recurring run time (server local time)</label>
-          <input type="time" id="recurring-time-new" value="08:00" />
-        </div>
-
-        <div class="button-row">
-          <button id="btn-run-all" class="st-btn st-btn-primary">🚀 Fetch & Evaluate All</button>
-          <button id="btn-fetch-only" class="st-btn st-btn-secondary">📡 Fetch Papers Only</button>
-          <button id="btn-clear-results" class="st-btn st-btn-secondary">🗑️ Clear Results</button>
-          <button id="btn-add-recurring" class="st-btn st-btn-secondary">⏰ Add to Recurring</button>
-        </div>
-
-        <!-- Progress Status Container -->
-        <div id="status-container" class="status-box hidden">
-          <div id="status-text">📡 Fetching papers from arXiv CS.CL...</div>
-          <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
-        </div>
-
-        <!-- Live Streaming / Paper Container -->
-        <div id="evaluation-stream-container"></div>
-
-        <!-- Evaluation Results Dashboard -->
-        <div id="results-dashboard" class="hidden">
-          <hr class="divider" />
-          <div class="metrics-dashboard">
-            <div class="metric-box"><span class="metric-num" id="metric-total">0</span><span class="metric-lbl">Total Papers</span></div>
-            <div class="metric-box metric-high"><span class="metric-num" id="metric-high">0</span><span class="metric-lbl">🟢 Highly Relevant (7-10)</span></div>
-            <div class="metric-box metric-mid"><span class="metric-num" id="metric-mid">0</span><span class="metric-lbl">🟡 Moderate (4-6)</span></div>
-            <div class="metric-box metric-low"><span class="metric-num" id="metric-low">0</span><span class="metric-lbl">🔴 Low Relevance (1-3)</span></div>
-          </div>
-
-          <!-- Sub-tabs for results -->
-          <div class="subtab-header">
-            <button class="subtab active" data-subtab="subtab-all">📋 All Results</button>
-            <button class="subtab" data-subtab="subtab-top">⭐ Top Matches</button>
-            <button class="subtab" data-subtab="subtab-debate">🗣️ Debate Details</button>
-          </div>
-
-          <div id="subtab-all" class="subtab-pane active">
-            <div id="papers-list-all"></div>
-          </div>
-
-          <div id="subtab-top" class="subtab-pane">
-            <div id="papers-list-top"></div>
-          </div>
-
-          <div id="subtab-debate" class="subtab-pane">
-            <div id="papers-list-debate"></div>
-          </div>
-
-          <hr class="divider" />
-          <div class="export-row">
-            <button id="btn-download-json" class="st-btn st-btn-secondary">📥 Download Results (JSON)</button>
-            <button id="btn-post-webhook" class="st-btn st-btn-secondary">📤 Post Results to kackers.app</button>
-          </div>
-        </div>
-      </section>
-
-      <!-- TAB 2: RECURRING EVALUATIONS -->
-      <section id="tab-recurring" class="tab-pane">
-        <h2>⏰ Recurring Evaluations</h2>
-        <p class="caption-muted">Runs once per day at the configured time (server local time). Cloud Run Jobs execute due evaluations automatically.</p>
-
-        <div id="bg-tasks-container"></div>
-
-        <div class="form-card" style="margin-top: 1.5rem;">
-          <h4>➕ Create Recurring Schedule</h4>
-          <form id="form-create-schedule">
-            <div class="form-group">
-              <label for="sch-label">Schedule label</label>
-              <input type="text" id="sch-label" placeholder="e.g. Daily MT Evaluation" required />
-            </div>
-            <div class="form-group">
-              <label for="sch-problem">Research problem</label>
-              <textarea id="sch-problem" rows="3" required></textarea>
-            </div>
-            <div class="form-row-2">
-              <div class="form-group">
-                <label for="sch-model">Gemini model</label>
-                <select id="sch-model">
-                  <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
-                  <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
-                  <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                  <option value="gemini-2.5-flash">gemini-2.5-flash</option>
-                  <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-                </select>
-              </div>
-              <div class="form-group">
-                <label for="sch-time">Daily run time (server local time)</label>
-                <input type="time" id="sch-time" value="08:00" required />
-              </div>
-            </div>
-            <div class="form-row-2">
-              <div class="form-group">
-                <label for="sch-papers">Papers to fetch</label>
-                <input type="number" id="sch-papers" value="50" min="5" max="100" />
-              </div>
-              <div class="form-group">
-                <label for="sch-keyword">Keyword filter</label>
-                <input type="text" id="sch-keyword" placeholder="e.g. summarization" />
-              </div>
-            </div>
-            <button type="submit" class="st-btn st-btn-primary">➕ Create Schedule</button>
-          </form>
-        </div>
-
-        <hr class="divider" />
-        <h4>📋 Existing Schedules</h4>
-        <div id="schedules-accordion-container"></div>
-      </section>
-
-      <!-- TAB 3: PAST EVALUATIONS HISTORY -->
-      <section id="tab-history" class="tab-pane">
-        <h2>🗄️ Past Evaluations</h2>
-        <div class="filter-card">
-          <h4>🔍 Filters</h4>
-          <div class="form-row-2">
-            <input type="text" id="history-search" placeholder="Search by paper title, author, abstract or problem..." />
-            <select id="history-score-filter">
-              <option value="all">All relevance scores</option>
-              <option value="high">🟢 High Relevance (7-10)</option>
-              <option value="mid">🟡 Moderate (4-6)</option>
-              <option value="low">🔴 Low Relevance (1-3)</option>
-            </select>
-          </div>
-        </div>
-
-        <div id="history-list-container" style="margin-top: 1.5rem;"></div>
-      </section>
     </main>
   </div>
 
   <!-- EDIT SCHEDULE MODAL -->
-  <div id="modal-edit-schedule" class="modal-overlay hidden">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3 id="modal-edit-title">✏️ Edit Schedule</h3>
-        <button id="btn-close-modal" class="close-btn">&times;</button>
-      </div>
-      <form id="form-edit-schedule">
+  <div id="modal-edit-schedule" class="modal-backdrop hidden">
+    <div class="modal-dialog">
+      <h3 id="modal-edit-title" style="margin:0">Edit Schedule</h3>
+      <form id="form-edit-schedule" style="display:flex;flex-direction:column;gap:12px">
         <input type="hidden" id="edit-sch-id" />
-        <div class="form-group">
-          <label for="edit-sch-label">Schedule label</label>
-          <input type="text" id="edit-sch-label" required />
+        <div class="field">
+          <label>Schedule label</label>
+          <input id="edit-sch-label" class="input" type="text" required />
         </div>
-        <div class="form-group">
-          <label for="edit-sch-problem">Research problem</label>
-          <textarea id="edit-sch-problem" rows="3" required></textarea>
+        <div class="field">
+          <label>Research problem</label>
+          <textarea id="edit-sch-problem" class="input" style="height:90px" required></textarea>
         </div>
-        <div class="form-row-2">
-          <div class="form-group">
-            <label for="edit-sch-model">Gemini model</label>
-            <select id="edit-sch-model">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="field">
+            <label>Model</label>
+            <select id="edit-sch-model" class="input">
               <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
               <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
               <option value="gemini-2.5-pro">gemini-2.5-pro</option>
@@ -281,24 +333,14 @@
               <option value="gemini-2.0-flash">gemini-2.0-flash</option>
             </select>
           </div>
-          <div class="form-group">
-            <label for="edit-sch-time">Daily run time (server local time)</label>
-            <input type="time" id="edit-sch-time" required />
+          <div class="field">
+            <label>Daily run time</label>
+            <input id="edit-sch-time" class="input" type="time" required />
           </div>
         </div>
-        <div class="form-row-2">
-          <div class="form-group">
-            <label for="edit-sch-papers">Papers count</label>
-            <input type="number" id="edit-sch-papers" min="5" max="100" />
-          </div>
-          <div class="form-group">
-            <label for="edit-sch-keyword">Keyword filter</label>
-            <input type="text" id="edit-sch-keyword" />
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" id="btn-cancel-edit" class="st-btn st-btn-secondary">Cancel</button>
-          <button type="submit" class="st-btn st-btn-primary">💾 Save Changes</button>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+          <button type="button" id="btn-cancel-edit" class="btn btn-secondary">Cancel</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
         </div>
       </form>
     </div>
