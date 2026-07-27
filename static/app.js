@@ -191,8 +191,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnViewSelected) {
         btnViewSelected.addEventListener('click', () => {
           const ids = Array.from(this.selectedPaperIds);
-          if (ids.length === 0) return alert('Select a paper to view details.');
-          this.openPaperDetailModal(ids[0]);
+          if (ids.length === 0) return alert('Select at least one paper to view details.');
+          this.openPaperDetailModal(ids);
         });
       }
 
@@ -734,79 +734,109 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     },
 
-    async openPaperDetailModal(paperId) {
+    async openPaperDetailModal(paperIds) {
       const modal = document.getElementById('modal-paper-detail');
       const titleEl = document.getElementById('modal-paper-title');
       const contentEl = document.getElementById('modal-paper-content');
 
+      const ids = Array.isArray(paperIds) ? paperIds : [paperIds];
+      if (!ids.length) return;
+
       modal.classList.remove('hidden');
-      titleEl.textContent = 'Loading Paper Details...';
-      contentEl.innerHTML = '<p style="opacity:.6">Fetching paper, 5-judge panel verdicts and debate transcripts...</p>';
+      titleEl.textContent = ids.length === 1 ? 'Paper Details' : `Selected Papers Details (${ids.length} Papers)`;
+      contentEl.innerHTML = '<p style="opacity:.6">Loading paper details, 5-judge panel verdicts and debate transcripts...</p>';
 
       try {
-        const res = await fetch(`/api/papers/${paperId}`);
-        if (!res.ok) throw new Error('Paper detail fetch failed');
-        const p = await res.json();
+        const papers = await Promise.all(ids.map(id => fetch(`/api/papers/${id}`).then(r => {
+          if (!r.ok) throw new Error(`Paper #${id} fetch failed`);
+          return r.json();
+        })));
 
-        const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
-        titleEl.textContent = p.title;
+        if (ids.length === 1 && papers[0].title) {
+          titleEl.textContent = papers[0].title;
+        }
 
-        // Judge Transcripts HTML
-        let judgesHtml = '';
-        if (p.verdicts && p.verdicts.length) {
-          judgesHtml = p.verdicts.map(j => {
+        let fullContentHtml = '';
+
+        papers.forEach((p, idx) => {
+          const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
+          const chipsHtml = (p.verdicts || []).map(j => {
             const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
-            const reasonsList = Array.isArray(j.key_reasons) ? j.key_reasons.map(r => `<li>${r}</li>`).join('') : '';
-            return `
-              <div class="debate-panel" style="background:var(--color-surface);border-left:3px solid var(--color-accent);margin-bottom:8px">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
-                  <strong style="font-size:13px">⚖️ Judge #${j.judge_run} (Seed: ${j.seed || 'N/A'})</strong>
-                  <span class="score-badge ${cls}" style="font-size:12px;padding:2px 6px">${j.relevance_score}/10</span>
+            return `<span class="judge-chip ${cls}">J${j.judge_run}: ${j.relevance_score}</span>`;
+          }).join(' ');
+
+          // Judge Transcripts HTML
+          let judgesHtml = '';
+          if (p.verdicts && p.verdicts.length) {
+            judgesHtml = p.verdicts.map(j => {
+              const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
+              const reasonsList = Array.isArray(j.key_reasons) ? j.key_reasons.map(r => `<li>${r}</li>`).join('') : '';
+              return `
+                <div class="debate-panel" style="background:var(--color-surface);border-left:3px solid var(--color-accent);margin-bottom:8px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                    <strong style="font-size:13px">⚖️ Judge #${j.judge_run} (Seed: ${j.seed || 'N/A'})</strong>
+                    <span class="score-badge ${cls}" style="font-size:12px;padding:2px 6px">${j.relevance_score}/10</span>
+                  </div>
+                  <div style="font-size:12.5px;margin-bottom:4px"><strong>Verdict:</strong> ${j.verdict || 'N/A'}</div>
+                  ${reasonsList ? `<ul style="margin:4px 0 4px 16px;padding:0;font-size:12px;opacity:.85">${reasonsList}</ul>` : ''}
+                  ${j.suggested_use ? `<div style="font-size:12px;opacity:.8"><strong>Suggested Use:</strong> ${j.suggested_use}</div>` : ''}
                 </div>
-                <div style="font-size:12.5px;margin-bottom:4px"><strong>Verdict:</strong> ${j.verdict || 'N/A'}</div>
-                ${reasonsList ? `<ul style="margin:4px 0 4px 16px;padding:0;font-size:12px;opacity:.85">${reasonsList}</ul>` : ''}
-                ${j.suggested_use ? `<div style="font-size:12px;opacity:.8"><strong>Suggested Use:</strong> ${j.suggested_use}</div>` : ''}
+              `;
+            }).join('');
+          }
+
+          // Debate Rounds HTML
+          let debatesHtml = '';
+          if (p.debates && p.debates.length) {
+            debatesHtml = p.debates.map((rnd, i) => `
+              <div class="debate-panel debate-advocate" style="margin-bottom:8px">
+                <div style="font-weight:800;font-size:12px;color:oklch(38% 0.15 155);margin-bottom:4px">🟢 Advocate (Round ${rnd.round_num || (i + 1)})</div>
+                <div style="font-size:13px">${rnd.advocate_arg}</div>
               </div>
-            `;
-          }).join('');
-        }
+              <div class="debate-panel debate-skeptic" style="margin-bottom:8px">
+                <div style="font-weight:800;font-size:12px;color:var(--color-accent);margin-bottom:4px">🔴 Skeptic (Round ${rnd.round_num || (i + 1)})</div>
+                <div style="font-size:13px">${rnd.skeptic_arg}</div>
+              </div>
+            `).join('');
+          }
 
-        // Debate Rounds HTML
-        let debatesHtml = '';
-        if (p.debates && p.debates.length) {
-          debatesHtml = p.debates.map((rnd, i) => `
-            <div class="debate-panel debate-advocate" style="margin-bottom:8px">
-              <div style="font-weight:800;font-size:12px;color:oklch(38% 0.15 155);margin-bottom:4px">🟢 Advocate (Round ${rnd.round_num || (i + 1)})</div>
-              <div style="font-size:13px">${rnd.advocate_arg}</div>
+          fullContentHtml += `
+            <div class="card paper-card-highlight" style="background:var(--color-bg);margin-bottom:20px;border-left:4px solid var(--color-accent)">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+                <div>
+                  <div style="font-family:var(--font-heading);font-weight:800;font-size:16px">${ids.length > 1 ? `${idx + 1}. ` : ''}${p.title}</div>
+                  <div style="font-size:12px;opacity:.6;margin-top:2px">👤 ${p.authors || 'Unknown'} · 📅 ${p.published || ''}</div>
+                  <div style="font-size:12.5px;margin-top:4px">🎯 <strong>Research Problem:</strong> ${p.problem_text}</div>
+                </div>
+                <span class="score-badge ${scoreClass}" style="font-size:15px;padding:3px 8px">${p.avg_score}/10</span>
+              </div>
+
+              <div style="display:flex;align-items:center;gap:6px;margin:6px 0">
+                ${chipsHtml}
+                <span style="font-size:12px;opacity:.7">&rarr; Avg: ${p.avg_score}</span>
+              </div>
+
+              <div style="margin:6px 0">
+                <h5 style="margin:0 0 2px;font-size:12.5px">Abstract</h5>
+                <p style="font-size:12.5px;line-height:1.4;opacity:.85;margin:0">${p.abstract || 'No abstract available.'}</p>
+              </div>
+
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+                <a href="${p.url}" target="_blank" class="btn btn-ghost" style="font-size:12.5px">Open Paper on arXiv &rarr;</a>
+              </div>
+
+              <details style="margin-top:10px" open>
+                <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ Multi-Agent Debates &amp; 5-Judge Panel Transcripts</summary>
+                <div style="margin-top:10px;display:flex;flex-direction:column;gap:12px">
+                  ${debatesHtml ? `<div><h5 style="margin:0 0 6px">🗣️ Advocate vs. Skeptic Debates</h5>${debatesHtml}</div>` : ''}
+                  ${judgesHtml ? `<div><h5 style="margin:8px 0 6px">⚖️ 5-Judge Panel Individual Verdicts</h5>${judgesHtml}</div>` : ''}
+                </div>
+              </details>
             </div>
-            <div class="debate-panel debate-skeptic" style="margin-bottom:8px">
-              <div style="font-weight:800;font-size:12px;color:var(--color-accent);margin-bottom:4px">🔴 Skeptic (Round ${rnd.round_num || (i + 1)})</div>
-              <div style="font-size:13px">${rnd.skeptic_arg}</div>
-            </div>
-          `).join('');
-        }
+          `;
+        });
 
-        contentEl.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center;padding:12px;background:var(--color-surface);border:1px solid var(--color-divider)">
-            <div>
-              <div style="font-size:12px;opacity:.6">👤 ${p.authors || 'Unknown'} · 📅 ${p.published || ''}</div>
-              <div style="font-size:12.5px;margin-top:2px">🎯 <strong>Research Problem:</strong> ${p.problem_text}</div>
-            </div>
-            <span class="score-badge ${scoreClass}" style="font-size:16px;padding:4px 10px">${p.avg_score}/10</span>
-          </div>
-
-          <div style="display:flex;gap:10px">
-            <a href="${p.url}" target="_blank" class="btn btn-primary">Open Paper on arXiv &rarr;</a>
-          </div>
-
-          <div>
-            <h5 style="margin:0 0 4px">Abstract</h5>
-            <p style="font-size:13px;line-height:1.5;opacity:.85;margin:0">${p.abstract || 'No abstract available.'}</p>
-          </div>
-
-          ${judgesHtml ? `<div><h5 style="margin:8px 0 6px">⚖️ 5-Judge Panel Individual Verdicts &amp; Suggested Uses</h5>${judgesHtml}</div>` : ''}
-          ${debatesHtml ? `<div><h5 style="margin:8px 0 6px">🗣️ Advocate vs. Skeptic Multi-Agent Debates</h5>${debatesHtml}</div>` : ''}
-        `;
+        contentEl.innerHTML = fullContentHtml;
       } catch (err) {
         contentEl.innerHTML = `<p style="color:var(--color-accent)">Failed to load paper details: ${err.message}</p>`;
       }
