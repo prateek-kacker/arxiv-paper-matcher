@@ -42,6 +42,7 @@ from core_engine import (
     update_schedule_last_run,
     find_matching_past_papers,
     fetch_arxiv_papers,
+    fetch_acl_papers,
     DebateEngine,
     Paper,
     DebateResult,
@@ -162,34 +163,47 @@ async def api_evaluate_stream(request: Request):
     keyword_filter = data.get("keyword_filter", "").strip()
     max_concurrent = int(data.get("max_concurrent", 3))
 
+    paper_source = data.get("paper_source", "arxiv")
+    acl_year = data.get("acl_year", "2024")
+
     if not api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
     if not problem_statement:
         raise HTTPException(status_code=400, detail="Research problem description is required.")
 
     async def event_generator():
-        yield {
-            "event": "stage",
-            "data": json.dumps({"stage": "fetching", "message": "Fetching papers from arXiv CS.CL..."})
-        }
-
         try:
-            papers = fetch_arxiv_papers(
-                max_results=max_papers,
-                search_query=keyword_filter,
-                days_back=days_back,
-            )
+            if paper_source == "acl":
+                yield {
+                    "event": "stage",
+                    "data": json.dumps({"stage": "fetching", "message": f"Fetching papers from ACL Anthology ({acl_year} Long Papers)..."})
+                }
+                papers = fetch_acl_papers(
+                    max_results=max_papers,
+                    search_query=keyword_filter,
+                    event_year=acl_year,
+                )
+            else:
+                yield {
+                    "event": "stage",
+                    "data": json.dumps({"stage": "fetching", "message": "Fetching papers from arXiv CS.CL..."})
+                }
+                papers = fetch_arxiv_papers(
+                    max_results=max_papers,
+                    search_query=keyword_filter,
+                    days_back=days_back,
+                )
         except Exception as e:
             yield {
                 "event": "error",
-                "data": json.dumps({"error": f"Failed to fetch papers: {e}"})
+                "data": json.dumps({"error": f"Failed to fetch papers from {paper_source.upper()}: {e}"})
             }
             return
 
         if not papers:
             yield {
                 "event": "error",
-                "data": json.dumps({"error": "No arXiv papers found matching filters."})
+                "data": json.dumps({"error": f"No {paper_source.upper()} papers found matching filters."})
             }
             return
 

@@ -189,6 +189,19 @@ def init_db():
             last_eval_id    INTEGER,
             created_at      TEXT DEFAULT (datetime('now'))
         );
+
+        CREATE TABLE IF NOT EXISTS acl_papers (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_year      TEXT NOT NULL,
+            paper_key       TEXT UNIQUE NOT NULL,
+            title           TEXT NOT NULL,
+            authors         TEXT,
+            abstract        TEXT,
+            url             TEXT,
+            pdf_url         TEXT,
+            published       TEXT,
+            created_at      TEXT DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     conn.close()
@@ -610,6 +623,94 @@ def fetch_arxiv_papers(
         if not use_date_filter and len(papers) >= fetch_limit:
             break
     return papers
+
+
+def fetch_acl_papers(
+    max_results: Optional[int] = 50,
+    search_query: Optional[str] = None,
+    event_year: str = "2024",
+) -> list[Paper]:
+    """
+    Scrapes and fetches ACL Anthology Long Papers (ACL 2024 / 2025 / 2026).
+    Caches extracted papers in SQLite database and syncs to Google Cloud Storage.
+    """
+    conn = get_db()
+    rows = conn.execute("SELECT * FROM acl_papers WHERE event_year = ?", (event_year,)).fetchall()
+
+    if not rows:
+        url = f"https://aclanthology.org/events/acl-{event_year}/"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+        try:
+            html = urllib.request.urlopen(req).read().decode('utf-8')
+            matches = re.findall(r'href=(/2024\.acl-long\.\d+/)>([^<]+)</a>', html)
+            if not matches:
+                matches = re.findall(r'href=["\'](/[^"\']*acl-long\.\d+/?)["\'][^>]*>([^<]+)</a>', html)
+
+            inserted = 0
+            for href, title in matches:
+                paper_key = href.strip('/').split('/')[-1]
+                p_url = f"https://aclanthology.org{href}"
+                pdf_url = f"https://aclanthology.org{href.rstrip('/')}.pdf"
+
+                try:
+                    conn.execute(
+                        """INSERT OR IGNORE INTO acl_papers (event_year, paper_key, title, authors, abstract, url, pdf_url, published)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (event_year, paper_key, title.strip(), "ACL Authors", "", p_url, pdf_url, f"{event_year}-08")
+                    )
+                    inserted += 1
+                except Exception:
+                    pass
+            conn.commit()
+            if inserted > 0:
+                sync_db_to_cloud()
+        except Exception as err:
+            print(f"[ACL Scraper Error] {err}", flush=True)
+
+    query_sql = "SELECT * FROM acl_papers WHERE event_year = ?"
+    params: list = [event_year]
+    if search_query and search_query.strip():
+        query_sql += " AND (title LIKE ? OR abstract LIKE ? OR authors LIKE ?)"
+        q = f"%{search_query.strip()}%"
+        params.extend([q, q, q])
+    query_sql += " LIMIT ?"
+    params.append(max_results or 50)
+
+    rows = conn.execute(query_sql, params).fetchall()
+
+    paper_objs = []
+    for r in rows:
+        pid = r["id"]
+        title = r["title"]
+        authors = r["authors"] or "ACL Authors"
+        abstract = r["abstract"] or ""
+        p_url = r["url"]
+        pdf_url = r["pdf_url"]
+        published = r["published"] or f"{event_year}"
+
+        if not abstract and p_url:
+            try:
+                p_req = urllib.request.Request(p_url, headers={'User-Agent': 'Mozilla/5.0'})
+                p_html = urllib.request.urlopen(p_req).read().decode('utf-8')
+                m = re.search(r'class="card-body acl-abstract"[^>]*>(.*?)</div>', p_html, re.DOTALL)
+                if m:
+                    abstract = re.sub(r'<[^>]+>', '', m.group(1)).replace('Abstract', '', 1).strip()
+                    conn.execute("UPDATE acl_papers SET abstract = ? WHERE id = ?", (abstract, pid))
+                    conn.commit()
+            except Exception:
+                abstract = title
+
+        paper_objs.append(Paper(
+            title=title,
+            authors=authors,
+            abstract=abstract or title,
+            url=pdf_url or p_url,
+            published=published,
+            categories=f"ACL-{event_year}",
+        ))
+
+    conn.close()
+    return paper_objs
 
 
 # ──────────────────────────────────────────────────────────────────────────────

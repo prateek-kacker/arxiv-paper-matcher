@@ -99,6 +99,16 @@ document.addEventListener('DOMContentLoaded', () => {
       bindVal('min-score', 'val-min-score');
       bindVal('max-concurrent', 'val-max-concurrent');
 
+      // Paper Source Change Control (arXiv vs ACL)
+      const paperSourceSelect = document.getElementById('paper-source');
+      if (paperSourceSelect) {
+        paperSourceSelect.addEventListener('change', (e) => {
+          const isAcl = e.target.value === 'acl';
+          const groupAclYear = document.getElementById('group-acl-year');
+          if (groupAclYear) groupAclYear.classList.toggle('hidden', !isAcl);
+        });
+      }
+
       // Fetch Mode Segmented Control
       document.querySelectorAll('input[name="fetchmode"]').forEach(radio => {
         radio.addEventListener('change', (e) => {
@@ -260,6 +270,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!problem) return alert('Please describe your research problem.');
 
       const model = document.getElementById('model-name').value;
+      const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
+      const aclYear = document.getElementById('acl-year')?.value || '2024';
+
       const fetchMode = document.querySelector('input[name="fetchmode"]:checked').value;
       const maxPapers = fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null;
       const daysBack = fetchMode === 'days' ? parseInt(document.getElementById('days-back').value) : null;
@@ -277,7 +290,9 @@ document.addEventListener('DOMContentLoaded', () => {
       btnStop.classList.remove('hidden');
 
       progressCard.classList.remove('hidden');
-      progressStage.textContent = 'Fetching papers from arXiv CS.CL...';
+      progressStage.textContent = paperSource === 'acl'
+        ? `Fetching papers from ACL Anthology (${aclYear} Long Papers)...`
+        : 'Fetching papers from arXiv CS.CL...';
       progressFill.style.width = '0%';
       dashboard.classList.add('hidden');
       this.currentResults = [];
@@ -292,6 +307,8 @@ document.addEventListener('DOMContentLoaded', () => {
           body: JSON.stringify({
             problem_statement: problem,
             model_name: model,
+            paper_source: paperSource,
+            acl_year: aclYear,
             max_papers: maxPapers,
             days_back: daysBack,
             keyword_filter: keyword,
