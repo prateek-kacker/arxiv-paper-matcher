@@ -309,8 +309,9 @@ document.addEventListener('DOMContentLoaded', () => {
           return `<span class="judge-chip ${cls}">J${j.run}: ${j.score}</span>`;
         }).join(' ');
 
+        // Advocate vs Skeptic Debate Transcripts
         let debatesHtml = '';
-        if (r.rounds) {
+        if (r.rounds && r.rounds.length) {
           debatesHtml = r.rounds.map((rnd, i) => `
             <div class="debate-panel debate-advocate" style="margin-bottom:8px">
               <div style="font-weight:800;font-size:12px;color:oklch(38% 0.15 155);margin-bottom:4px">🟢 Advocate (Round ${i + 1})</div>
@@ -321,6 +322,26 @@ document.addEventListener('DOMContentLoaded', () => {
               <div style="font-size:13px">${rnd.skeptic}</div>
             </div>
           `).join('');
+        }
+
+        // 5-Judge Panel Transcripts
+        let judgesHtml = '';
+        if (r.judge_scores && r.judge_scores.length) {
+          judgesHtml = r.judge_scores.map(j => {
+            const cls = j.score >= 7 ? 'high' : j.score >= 4 ? 'mid' : 'low';
+            const reasonsList = Array.isArray(j.reasons) ? j.reasons.map(reason => `<li>${reason}</li>`).join('') : '';
+            return `
+              <div class="debate-panel" style="background:var(--color-surface);border-left:3px solid var(--color-accent);margin-bottom:8px">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                  <strong style="font-size:13px">⚖️ Judge #${j.run} (Seed: ${j.seed || 'N/A'})</strong>
+                  <span class="score-badge ${cls}" style="font-size:12px;padding:2px 6px">${j.score}/10</span>
+                </div>
+                <div style="font-size:12.5px;margin-bottom:4px"><strong>Verdict:</strong> ${j.verdict || 'N/A'}</div>
+                ${reasonsList ? `<ul style="margin:4px 0 4px 16px;padding:0;font-size:12px;opacity:.85">${reasonsList}</ul>` : ''}
+                ${j.suggested_use ? `<div style="font-size:12px;opacity:.8"><strong>Suggested Use:</strong> ${j.suggested_use}</div>` : ''}
+              </div>
+            `;
+          }).join('');
         }
 
         const card = document.createElement('div');
@@ -347,8 +368,11 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
 
           <details style="margin-top:8px">
-            <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ Debate Transcripts &amp; Judge Details</summary>
-            <div style="margin-top:10px;display:flex;flex-direction:column;gap:8px">${debatesHtml}</div>
+            <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ Multi-Agent Debates &amp; 5-Judge Panel Transcripts</summary>
+            <div style="margin-top:10px;display:flex;flex-direction:column;gap:12px">
+              ${debatesHtml ? `<div><h5 style="margin:0 0 6px">🗣️ Advocate vs. Skeptic Debates</h5>${debatesHtml}</div>` : ''}
+              ${judgesHtml ? `<div><h5 style="margin:8px 0 6px">⚖️ 5-Judge Panel Individual Verdicts</h5>${judgesHtml}</div>` : ''}
+            </div>
           </details>
         `;
         container.appendChild(card);
@@ -499,9 +523,9 @@ document.addEventListener('DOMContentLoaded', () => {
           <div style="font-size:12px;opacity:.6">Model: ${ev.model_name} | Date: ${ev.created_at} | Papers Evaluated: ${ev.paper_count}</div>
 
           <details style="margin-top:8px" class="past-eval-details" data-id="${ev.id}">
-            <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ View Evaluated Papers for Eval #${ev.id}</summary>
-            <div class="past-eval-papers-container" style="margin-top:10px;display:flex;flex-direction:column;gap:8px">
-              <p style="font-size:12px;opacity:.6">Loading papers...</p>
+            <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ View Evaluated Papers &amp; Judge Transcripts for Eval #${ev.id}</summary>
+            <div class="past-eval-papers-container" style="margin-top:10px;display:flex;flex-direction:column;gap:12px">
+              <p style="font-size:12px;opacity:.6">Loading papers &amp; transcripts...</p>
             </div>
           </details>
         `;
@@ -517,7 +541,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }));
 
-      // Bind lazy loading of past evaluation papers when accordion is opened
+      // Bind lazy loading of past evaluation papers & judge transcripts when accordion is opened
       container.querySelectorAll('.past-eval-details').forEach(details => {
         details.addEventListener('toggle', async (e) => {
           if (details.open) {
@@ -540,6 +564,42 @@ document.addEventListener('DOMContentLoaded', () => {
                   const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
                   pCard.className = 'card';
                   pCard.style.background = 'var(--color-bg)';
+
+                  // Judge transcripts HTML for past paper
+                  let pastJudgesHtml = '';
+                  if (p.verdicts && p.verdicts.length) {
+                    pastJudgesHtml = p.verdicts.map(j => {
+                      const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
+                      const reasonsList = Array.isArray(j.key_reasons) ? j.key_reasons.map(r => `<li>${r}</li>`).join('') : '';
+                      return `
+                        <div class="debate-panel" style="background:var(--color-surface);border-left:3px solid var(--color-accent);margin-bottom:6px">
+                          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+                            <strong style="font-size:12px">⚖️ Judge #${j.judge_run} (Seed: ${j.seed || 'N/A'})</strong>
+                            <span class="score-badge ${cls}" style="font-size:11px;padding:2px 5px">${j.relevance_score}/10</span>
+                          </div>
+                          <div style="font-size:12px"><strong>Verdict:</strong> ${j.verdict || 'N/A'}</div>
+                          ${reasonsList ? `<ul style="margin:2px 0 2px 14px;padding:0;font-size:11.5px;opacity:.85">${reasonsList}</ul>` : ''}
+                          ${j.suggested_use ? `<div style="font-size:11.5px;opacity:.8"><strong>Suggested Use:</strong> ${j.suggested_use}</div>` : ''}
+                        </div>
+                      `;
+                    }).join('');
+                  }
+
+                  // Debate rounds HTML for past paper
+                  let pastDebatesHtml = '';
+                  if (p.debates && p.debates.length) {
+                    pastDebatesHtml = p.debates.map((rnd, i) => `
+                      <div class="debate-panel debate-advocate" style="margin-bottom:6px">
+                        <div style="font-weight:800;font-size:11.5px;color:oklch(38% 0.15 155);margin-bottom:2px">🟢 Advocate (Round ${rnd.round_num || (i + 1)})</div>
+                        <div style="font-size:12px">${rnd.advocate_arg}</div>
+                      </div>
+                      <div class="debate-panel debate-skeptic" style="margin-bottom:6px">
+                        <div style="font-weight:800;font-size:11.5px;color:var(--color-accent);margin-bottom:2px">🔴 Skeptic (Round ${rnd.round_num || (i + 1)})</div>
+                        <div style="font-size:12px">${rnd.skeptic_arg}</div>
+                      </div>
+                    `).join('');
+                  }
+
                   pCard.innerHTML = `
                     <div style="display:flex;justify-content:space-between;align-items:flex-start">
                       <div>
@@ -548,7 +608,16 @@ document.addEventListener('DOMContentLoaded', () => {
                       </div>
                       <span class="score-badge ${scoreClass}">${p.avg_score}/10</span>
                     </div>
+
                     <a href="${p.url}" target="_blank" class="btn btn-ghost" style="font-size:12px;align-self:flex-start">Open Paper &rarr;</a>
+
+                    <details style="margin-top:6px">
+                      <summary style="cursor:pointer;font-size:12px;font-weight:800;color:var(--color-accent)">▼ View Multi-Agent Debates &amp; 5-Judge Panel Transcripts</summary>
+                      <div style="margin-top:8px;display:flex;flex-direction:column;gap:8px">
+                        ${pastDebatesHtml ? `<div><strong style="font-size:12px">🗣️ Advocate vs. Skeptic Debates</strong><div style="margin-top:4px">${pastDebatesHtml}</div></div>` : ''}
+                        ${pastJudgesHtml ? `<div><strong style="font-size:12px">⚖️ 5-Judge Panel Individual Verdicts</strong><div style="margin-top:4px">${pastJudgesHtml}</div></div>` : ''}
+                      </div>
+                    </details>
                   `;
                   papersContainer.appendChild(pCard);
                 });

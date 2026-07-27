@@ -280,7 +280,6 @@ def load_evaluation_papers(eval_id: int) -> list[dict]:
         "SELECT * FROM papers WHERE evaluation_id = ? ORDER BY avg_score DESC",
         (eval_id,),
     ).fetchall()
-    conn.close()
     papers = [dict(r) for r in rows]
     for p in papers:
         pid = p["id"]
@@ -296,6 +295,7 @@ def load_evaluation_papers(eval_id: int) -> list[dict]:
                 vd["key_reasons"] = []
             v_list.append(vd)
         p["verdicts"] = v_list
+    conn.close()
     return papers
 
 

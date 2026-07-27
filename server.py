@@ -245,7 +245,14 @@ async def api_evaluate_stream(request: Request):
                     "reasons": result.combined_reasons,
                     "suggested_use": result.combined_suggested_use,
                     "judge_scores": [
-                        {"run": jv.run, "score": jv.relevance_score, "seed": jv.seed, "verdict": jv.verdict}
+                        {
+                            "run": jv.run,
+                            "score": jv.relevance_score,
+                            "seed": jv.seed,
+                            "verdict": jv.verdict,
+                            "reasons": jv.key_reasons,
+                            "suggested_use": jv.suggested_use
+                        }
                         for jv in result.judge_verdicts
                     ],
                     "rounds": [
