@@ -86,8 +86,8 @@
         </div>
 
         <div class="field" id="group-paper-count">
-          <label>Papers to fetch — <span id="val-max-papers">50</span></label>
-          <input type="range" id="max-papers" min="5" max="100" step="5" value="50" style="width:100%" />
+          <label>Papers to fetch — <span id="val-max-papers">10</span></label>
+          <input type="range" id="max-papers" min="1" max="100" step="1" value="10" style="width:100%" />
         </div>
 
         <div class="field hidden" id="group-days-back">
@@ -266,7 +266,7 @@
                   <label>Research problem</label>
                   <textarea id="sch-problem" class="input" style="height:90px" required></textarea>
                 </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
                   <div class="field">
                     <label>Gemini Model</label>
                     <select id="sch-model" class="input">
@@ -280,6 +280,10 @@
                   <div class="field">
                     <label>Daily run time</label>
                     <input id="sch-time" class="input" type="time" value="08:00" required />
+                  </div>
+                  <div class="field">
+                    <label>Papers to fetch</label>
+                    <input id="sch-papers" class="input" type="number" min="1" max="100" value="10" required />
                   </div>
                 </div>
                 <button type="submit" class="btn btn-primary" style="align-self:flex-start">Create Schedule</button>
@@ -326,7 +330,7 @@
           <label>Research problem</label>
           <textarea id="edit-sch-problem" class="input" style="height:90px" required></textarea>
         </div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
           <div class="field">
             <label>Model</label>
             <select id="edit-sch-model" class="input">
@@ -340,6 +344,10 @@
           <div class="field">
             <label>Daily run time</label>
             <input id="edit-sch-time" class="input" type="time" required />
+          </div>
+          <div class="field">
+            <label>Papers to fetch</label>
+            <input id="edit-sch-papers" class="input" type="number" min="1" max="100" value="10" required />
           </div>
         </div>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">

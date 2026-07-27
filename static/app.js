@@ -162,7 +162,7 @@ document.addEventListener('DOMContentLoaded', () => {
           problem_text: document.getElementById('sch-problem').value.trim(),
           model_name: document.getElementById('sch-model').value,
           run_time: document.getElementById('sch-time').value,
-          max_papers: 50,
+          max_papers: parseInt(document.getElementById('sch-papers').value) || 10,
           fetch_mode: 'count',
         };
         await fetch('/api/schedules', {
@@ -184,7 +184,7 @@ document.addEventListener('DOMContentLoaded', () => {
           problem_text: document.getElementById('edit-sch-problem').value.trim(),
           model_name: document.getElementById('edit-sch-model').value,
           run_time: document.getElementById('edit-sch-time').value,
-          max_papers: 50,
+          max_papers: parseInt(document.getElementById('edit-sch-papers').value) || 10,
           fetch_mode: 'count',
         };
         await fetch(`/api/schedules/${id}`, {
@@ -502,6 +502,7 @@ document.addEventListener('DOMContentLoaded', () => {
           document.getElementById('edit-sch-problem').value = sch.problem_text;
           document.getElementById('edit-sch-model').value = sch.model_name;
           document.getElementById('edit-sch-time').value = sch.run_time;
+          document.getElementById('edit-sch-papers').value = sch.max_papers || 10;
           document.getElementById('modal-edit-schedule').classList.remove('hidden');
         }
       }));
