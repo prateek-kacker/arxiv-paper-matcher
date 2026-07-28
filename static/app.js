@@ -263,12 +263,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('sch-model').value = model;
         document.getElementById('sch-source').value = paperSource;
         document.getElementById('sch-acl-track').value = aclTrack;
-        
-        if (paperSource === 'acl') {
-          document.getElementById('sch-group-acl-track').classList.remove('hidden');
-        } else {
-          document.getElementById('sch-group-acl-track').classList.add('hidden');
-        }
+        document.getElementById('sch-source').dispatchEvent(new Event('change'));
 
         const fmRadio = document.querySelector(`input[name="sch-fetchmode"][value="${fetchMode}"]`);
         if (fmRadio) {
@@ -784,12 +779,7 @@ document.addEventListener('DOMContentLoaded', () => {
           document.getElementById('edit-sch-model').value = sch.model_name;
           document.getElementById('edit-sch-source').value = sch.paper_source || 'arxiv';
           document.getElementById('edit-sch-acl-track').value = sch.acl_track || 'all';
-          
-          if ((sch.paper_source || 'arxiv') === 'acl') {
-            document.getElementById('edit-sch-group-acl-track').classList.remove('hidden');
-          } else {
-            document.getElementById('edit-sch-group-acl-track').classList.add('hidden');
-          }
+          document.getElementById('edit-sch-source').dispatchEvent(new Event('change'));
 
           const fetchMode = sch.fetch_mode || 'count';
           const radio = document.querySelector(`input[name="edit-sch-fetchmode"][value="${fetchMode}"]`);
