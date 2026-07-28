@@ -180,7 +180,8 @@ async def api_evaluate_stream(request: Request):
                     "event": "stage",
                     "data": json.dumps({"stage": "fetching", "message": f"Fetching papers from ACL 2026 Anthology ({track_label} Track)..."})
                 }
-                papers = fetch_acl_papers(
+                papers = await asyncio.to_thread(
+                    fetch_acl_papers,
                     max_results=max_papers,
                     search_query=keyword_filter,
                     volume_filter=acl_track,
@@ -190,7 +191,8 @@ async def api_evaluate_stream(request: Request):
                     "event": "stage",
                     "data": json.dumps({"stage": "fetching", "message": "Fetching papers from arXiv CS.CL..."})
                 }
-                papers = fetch_arxiv_papers(
+                papers = await asyncio.to_thread(
+                    fetch_arxiv_papers,
                     max_results=max_papers,
                     search_query=keyword_filter,
                     days_back=days_back,
@@ -316,9 +318,9 @@ async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks)
     # Fetch papers
     try:
         if paper_source == "acl":
-            papers = fetch_acl_papers(max_results=max_papers, search_query=keyword_filter, volume_filter=acl_track)
+            papers = await asyncio.to_thread(fetch_acl_papers, max_results=max_papers, search_query=keyword_filter, volume_filter=acl_track)
         else:
-            papers = fetch_arxiv_papers(max_results=max_papers, search_query=keyword_filter, days_back=days_back)
+            papers = await asyncio.to_thread(fetch_arxiv_papers, max_results=max_papers, search_query=keyword_filter, days_back=days_back)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch papers: {e}")
 

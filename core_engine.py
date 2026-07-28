@@ -709,33 +709,17 @@ def fetch_acl_papers(
 
     paper_objs = []
     for r in rows:
-        pid = r["id"]
         title = r["title"]
         authors = r["authors"] or "ACL 2026 Authors"
-        abstract = r["abstract"] or ""
+        abstract = r["abstract"] or title
         p_url = r["url"]
         pdf_url = r["pdf_url"]
         published = r["published"] or "2026-08"
 
-        if not abstract and p_url:
-            try:
-                p_req = urllib.request.Request(p_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-                with urllib.request.urlopen(p_req, timeout=2.5) as resp:
-                    p_html = resp.read().decode('utf-8')
-                    m = re.search(r'class="card-body acl-abstract"[^>]*>(.*?)</div>', p_html, re.DOTALL)
-                    if m:
-                        abstract = re.sub(r'<[^>]+>', '', m.group(1)).replace('Abstract', '', 1).strip()
-                        conn.execute("UPDATE acl_papers SET abstract = ? WHERE id = ?", (abstract, pid))
-                        conn.commit()
-                    else:
-                        abstract = title
-            except Exception:
-                abstract = title
-
         paper_objs.append(Paper(
             title=title,
             authors=authors,
-            abstract=abstract or title,
+            abstract=abstract,
             url=pdf_url or p_url,
             published=published,
             categories="ACL-2026",
