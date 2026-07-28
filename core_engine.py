@@ -202,6 +202,7 @@ def init_db():
             title           TEXT NOT NULL,
             authors         TEXT,
             abstract        TEXT,
+            full_text       TEXT,
             url             TEXT,
             pdf_url         TEXT,
             published       TEXT,
@@ -217,6 +218,7 @@ def init_db():
         ("evaluations", "completed_papers INTEGER DEFAULT 0"),
         ("recurring_schedules", "paper_source TEXT DEFAULT 'arxiv'"),
         ("recurring_schedules", "acl_track TEXT DEFAULT 'all'"),
+        ("acl_papers", "full_text TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
@@ -596,6 +598,7 @@ class Paper:
     url: str
     published: str
     categories: str
+    full_text: Optional[str] = None
 
 
 @dataclass
@@ -721,6 +724,7 @@ def fetch_acl_papers(
         title = r["title"]
         authors = r["authors"] or "ACL 2026 Authors"
         abstract = r["abstract"] or title
+        full_text = dict(r).get("full_text")
         p_url = r["url"]
         pdf_url = r["pdf_url"]
         published = r["published"] or "2026-08"
@@ -732,6 +736,7 @@ def fetch_acl_papers(
             url=pdf_url or p_url,
             published=published,
             categories="ACL-2026",
+            full_text=full_text,
         ))
 
     conn.close()
@@ -815,6 +820,12 @@ class DebateEngine:
             if status_callback:
                 status_callback(msg)
 
+        full_text_block = (
+            f"\n\n## Full Paper Text / Content\n{paper.full_text[:35000]}"
+            if paper.full_text
+            else f"\n\n## Full Paper Abstract & Technical Content\n{paper.abstract}"
+        )
+
         context = (
             f"## User's Research Problem\n{problem}\n\n"
             f"## Paper Under Review\n"
@@ -822,7 +833,8 @@ class DebateEngine:
             f"**Authors:** {paper.authors}\n"
             f"**Published:** {paper.published}\n"
             f"**Categories:** {paper.categories}\n"
-            f"**Abstract:** {paper.abstract}\n"
+            f"**Abstract:** {paper.abstract}"
+            f"{full_text_block}\n"
         )
         result = DebateResult(paper=paper)
         debate_history = ""
