@@ -99,14 +99,32 @@ document.addEventListener('DOMContentLoaded', () => {
       bindVal('min-score', 'val-min-score');
       bindVal('max-concurrent', 'val-max-concurrent');
 
-      // Paper Source Change Control (arXiv vs ACL 2026)
+      // Paper Source Change Control (arXiv vs ACL 2026 for New Evaluation Sidebar)
       const paperSourceSelect = document.getElementById('paper-source');
       if (paperSourceSelect) {
-        paperSourceSelect.addEventListener('change', (e) => {
-          const isAcl = e.target.value === 'acl';
+        const handleSidebarSourceChange = () => {
+          const isAcl = paperSourceSelect.value === 'acl';
           const groupAclTrack = document.getElementById('group-acl-track');
+          const groupFetchMode = document.getElementById('group-fetchmode');
+          const groupPaperCount = document.getElementById('group-paper-count');
+          const groupDaysBack = document.getElementById('group-days-back');
+
           if (groupAclTrack) groupAclTrack.classList.toggle('hidden', !isAcl);
-        });
+          if (groupFetchMode) groupFetchMode.classList.toggle('hidden', isAcl);
+
+          if (isAcl) {
+            if (groupDaysBack) groupDaysBack.classList.add('hidden');
+            if (groupPaperCount) groupPaperCount.classList.remove('hidden');
+            const radioCount = document.querySelector('input[name="fetchmode"][value="count"]');
+            if (radioCount) radioCount.checked = true;
+          } else {
+            const selectedMode = document.querySelector('input[name="fetchmode"]:checked')?.value || 'count';
+            if (groupPaperCount) groupPaperCount.classList.toggle('hidden', selectedMode !== 'count');
+            if (groupDaysBack) groupDaysBack.classList.toggle('hidden', selectedMode !== 'days');
+          }
+        };
+        paperSourceSelect.addEventListener('change', handleSidebarSourceChange);
+        handleSidebarSourceChange();
       }
 
       // Fetch Mode Segmented Control
@@ -171,19 +189,37 @@ document.addEventListener('DOMContentLoaded', () => {
       syncSchRange('edit-sch-min-score', 'edit-sch-val-minscore');
       syncSchRange('edit-sch-max-concurrent', 'edit-sch-val-concurrent');
 
-      // Schedule Source & Track toggles
-      const bindSourceToggle = (srcId, trackGroupId) => {
+      // Schedule Source & Track toggles (Hides Fetch mode when ACL selected)
+      const bindSourceToggle = (srcId, trackGroupId, fetchModeGroupId, countGrpId, daysGrpId, radioName) => {
         const src = document.getElementById(srcId);
-        const grp = document.getElementById(trackGroupId);
-        if (src && grp) {
-          src.addEventListener('change', () => {
-            if (src.value === 'acl') grp.classList.remove('hidden');
-            else grp.classList.add('hidden');
-          });
+        const trackGrp = document.getElementById(trackGroupId);
+        const fetchGrp = document.getElementById(fetchModeGroupId);
+        const countGrp = document.getElementById(countGrpId);
+        const daysGrp = document.getElementById(daysGrpId);
+
+        if (src) {
+          const handleSourceChange = () => {
+            const isAcl = src.value === 'acl';
+            if (trackGrp) trackGrp.classList.toggle('hidden', !isAcl);
+            if (fetchGrp) fetchGrp.classList.toggle('hidden', isAcl);
+
+            if (isAcl) {
+              if (daysGrp) daysGrp.classList.add('hidden');
+              if (countGrp) countGrp.classList.remove('hidden');
+              const radioCount = document.querySelector(`input[name="${radioName}"][value="count"]`);
+              if (radioCount) radioCount.checked = true;
+            } else {
+              const selectedMode = document.querySelector(`input[name="${radioName}"]:checked`)?.value || 'count';
+              if (countGrp) countGrp.classList.toggle('hidden', selectedMode !== 'count');
+              if (daysGrp) daysGrp.classList.toggle('hidden', selectedMode !== 'days');
+            }
+          };
+          src.addEventListener('change', handleSourceChange);
+          handleSourceChange();
         }
       };
-      bindSourceToggle('sch-source', 'sch-group-acl-track');
-      bindSourceToggle('edit-sch-source', 'edit-sch-group-acl-track');
+      bindSourceToggle('sch-source', 'sch-group-acl-track', 'sch-field-fetchmode', 'sch-group-count', 'sch-group-days', 'sch-fetchmode');
+      bindSourceToggle('edit-sch-source', 'edit-sch-group-acl-track', 'edit-sch-field-fetchmode', 'edit-sch-group-count', 'edit-sch-group-days', 'edit-sch-fetchmode');
 
       // Schedule Fetch Mode toggles
       const bindFetchToggle = (radioName, countGrpId, daysGrpId) => {
