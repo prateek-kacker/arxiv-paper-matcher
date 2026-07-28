@@ -32,18 +32,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
           tab.classList.add('active');
           const paneId = tab.getAttribute('data-tab');
-          const pane = document.getElementById(paneId);
-          if (pane) pane.classList.add('active');
-
-          // Refresh data on tab switch
-          if (paneId === 'tab-history') {
-            this.loadHistory();
-          } else if (paneId === 'tab-recurring') {
-            this.autoFillScheduleForm(false);
-            this.loadSchedules();
-          }
+          this.navigateToTab(paneId);
         });
       });
+
+      document.getElementById('btn-go-to-history')?.addEventListener('click', () => {
+        this.navigateToTab('tab-history');
+      });
+    },
+
+    navigateToTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(t => {
+        t.classList.toggle('active', t.getAttribute('data-tab') === tabId);
+      });
+      document.querySelectorAll('.tab-pane').forEach(p => {
+        p.classList.toggle('active', p.id === tabId);
+      });
+      if (tabId === 'tab-history') {
+        this.loadHistory();
+      } else if (tabId === 'tab-recurring') {
+        this.autoFillScheduleForm(false);
+        this.loadSchedules();
+      }
+    },
 
       // Subtabs (Works for both Results dashboard and History sub-tabs!)
       document.addEventListener('click', (e) => {
