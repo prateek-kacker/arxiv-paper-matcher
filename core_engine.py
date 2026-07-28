@@ -719,13 +719,16 @@ def fetch_acl_papers(
 
         if not abstract and p_url:
             try:
-                p_req = urllib.request.Request(p_url, headers={'User-Agent': 'Mozilla/5.0'})
-                p_html = urllib.request.urlopen(p_req).read().decode('utf-8')
-                m = re.search(r'class="card-body acl-abstract"[^>]*>(.*?)</div>', p_html, re.DOTALL)
-                if m:
-                    abstract = re.sub(r'<[^>]+>', '', m.group(1)).replace('Abstract', '', 1).strip()
-                    conn.execute("UPDATE acl_papers SET abstract = ? WHERE id = ?", (abstract, pid))
-                    conn.commit()
+                p_req = urllib.request.Request(p_url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+                with urllib.request.urlopen(p_req, timeout=2.5) as resp:
+                    p_html = resp.read().decode('utf-8')
+                    m = re.search(r'class="card-body acl-abstract"[^>]*>(.*?)</div>', p_html, re.DOTALL)
+                    if m:
+                        abstract = re.sub(r'<[^>]+>', '', m.group(1)).replace('Abstract', '', 1).strip()
+                        conn.execute("UPDATE acl_papers SET abstract = ? WHERE id = ?", (abstract, pid))
+                        conn.commit()
+                    else:
+                        abstract = title
             except Exception:
                 abstract = title
 
