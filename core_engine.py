@@ -219,6 +219,7 @@ def init_db():
         ("recurring_schedules", "paper_source TEXT DEFAULT 'arxiv'"),
         ("recurring_schedules", "acl_track TEXT DEFAULT 'all'"),
         ("acl_papers", "full_text TEXT"),
+        ("papers", "full_text TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
@@ -265,9 +266,9 @@ def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool 
     conn = get_db()
     cur = conn.execute(
         """INSERT INTO papers
-           (evaluation_id, title, authors, abstract, url, published, categories, avg_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (eval_id, paper.title, paper.authors, paper.abstract,
+           (evaluation_id, title, authors, abstract, full_text, url, published, categories, avg_score)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (eval_id, paper.title, paper.authors, paper.abstract, paper.full_text,
          paper.url, paper.published, paper.categories, avg_score),
     )
     conn.commit()
