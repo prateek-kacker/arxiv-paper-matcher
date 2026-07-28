@@ -410,15 +410,20 @@
             <div id="history-subtab-table" class="subtab-pane active" style="display:flex;flex-direction:column;gap:16px">
               
               <!-- Filter & Search Toolbar -->
-              <div class="card elev-sm" style="flex-direction:row;gap:12px;align-items:center;flex-wrap:wrap">
-                <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or research problem..." style="flex:1;min-width:250px" />
-                <select id="history-filter-score" class="input" style="width:180px">
+              <div id="history-filter-toolbar" class="card elev-sm" style="flex-direction:row;gap:12px;align-items:center;flex-wrap:wrap">
+                <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or research problem..." style="flex:1;min-width:240px" />
+                <select id="history-filter-source" class="input" style="width:160px">
+                  <option value="all">All Sources</option>
+                  <option value="arxiv">arXiv CS.CL</option>
+                  <option value="acl">ACL 2026</option>
+                </select>
+                <select id="history-filter-score" class="input" style="width:160px">
                   <option value="all">All relevance scores</option>
                   <option value="high">🟢 High (7-10)</option>
                   <option value="mid">🟡 Moderate (4-6)</option>
                   <option value="low">🔴 Low (1-3)</option>
                 </select>
-                <select id="history-sort" class="input" style="width:180px">
+                <select id="history-sort" class="input" style="width:160px">
                   <option value="score-desc">Score: High &rarr; Low</option>
                   <option value="score-asc">Score: Low &rarr; High</option>
                   <option value="date-desc">Date: Newest First</option>
@@ -427,7 +432,7 @@
               </div>
 
               <!-- Bulk Actions Toolbar -->
-              <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">
+              <div id="history-bulk-toolbar" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">
                 <div style="display:flex;align-items:center;gap:12px">
                   <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:800;cursor:pointer">
                     <input type="checkbox" id="chk-select-all-papers" />
@@ -436,13 +441,13 @@
                   <span id="selected-papers-count" style="font-size:13px;opacity:.7">Selected (0)</span>
                 </div>
                 <div style="display:flex;gap:8px">
-                  <button id="btn-view-selected-papers" class="btn btn-secondary" disabled>👁️ View Selected Details</button>
+                  <button id="btn-view-selected-papers" class="btn btn-primary" disabled>👁️ View Selected in Right Pane</button>
                   <button id="btn-delete-selected-papers" class="btn btn-secondary" style="color:var(--color-accent)" disabled>🗑️ Delete Selected Papers</button>
                 </div>
               </div>
 
               <!-- Papers Table Container -->
-              <div style="overflow-x:auto;border:1px solid var(--color-divider)">
+              <div id="history-table-container" style="overflow-x:auto;border:1px solid var(--color-divider)">
                 <table id="table-history-papers" style="width:100%;border-collapse:collapse;font-size:13.5px">
                   <thead>
                     <tr style="background:var(--color-surface);border-bottom:2px solid var(--color-divider);text-align:left">
@@ -458,6 +463,21 @@
                     <tr><td colspan="6" style="padding:16px;text-align:center;opacity:.6">Loading papers...</td></tr>
                   </tbody>
                 </table>
+              </div>
+
+              <!-- Full Right Pane Selected Papers View Container -->
+              <div id="history-selected-pane" class="card hidden" style="display:flex;flex-direction:column;gap:16px;padding:20px">
+                <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:2px solid var(--color-divider);padding-bottom:12px">
+                  <div>
+                    <h4 id="history-pane-title" style="margin:0">Selected Papers Details</h4>
+                    <span style="font-size:12.5px;opacity:.7">Full debate transcripts, 5-judge panel verdicts &amp; relevance scores</span>
+                  </div>
+                  <div style="display:flex;gap:8px">
+                    <button type="button" id="btn-close-history-pane" class="btn btn-secondary">← Back to Papers List</button>
+                    <button type="button" id="btn-delete-pane-papers" class="btn btn-secondary" style="color:var(--color-accent)">🗑️ Delete Selected</button>
+                  </div>
+                </div>
+                <div id="history-pane-content" style="display:flex;flex-direction:column;gap:20px"></div>
               </div>
             </div>
 

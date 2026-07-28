@@ -842,6 +842,7 @@ document.addEventListener('DOMContentLoaded', () => {
       tbody.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
+      const sourceFilter = document.getElementById('history-filter-source')?.value || 'all';
       const scoreFilter = document.getElementById('history-filter-score')?.value || 'all';
       const sortVal = document.getElementById('history-sort')?.value || 'score-desc';
 
@@ -854,6 +855,12 @@ document.addEventListener('DOMContentLoaded', () => {
           (p.abstract || '').toLowerCase().includes(searchVal) ||
           (p.problem_text || '').toLowerCase().includes(searchVal)
         );
+      }
+
+      if (sourceFilter === 'acl') {
+        list = list.filter(p => (p.categories || '').includes('ACL'));
+      } else if (sourceFilter === 'arxiv') {
+        list = list.filter(p => !(p.categories || '').includes('ACL'));
       }
 
       if (scoreFilter === 'high') {
@@ -897,14 +904,19 @@ document.addEventListener('DOMContentLoaded', () => {
           ? `${p.problem_text.substring(0, 110)}...`
           : p.problem_text;
 
+        const isAclPaper = (p.categories || '').includes('ACL');
+        const sourceBadge = isAclPaper
+          ? '<span class="score-badge mid" style="font-size:10px;padding:1px 4px;margin-right:4px">ACL 2026</span>'
+          : '<span class="score-badge high" style="font-size:10px;padding:1px 4px;margin-right:4px">arXiv</span>';
+
         tr.innerHTML = `
           <td style="padding:10px;text-align:center">
             <input type="checkbox" class="chk-paper-item" data-id="${p.id}" ${isChecked ? 'checked' : ''} />
           </td>
           <td style="padding:10px">
-            <div style="font-weight:800;font-size:14px">${p.title}</div>
+            <div style="font-weight:800;font-size:14px">${sourceBadge} ${p.title}</div>
             <div style="font-size:11.5px;opacity:.6;margin-top:2px">👤 ${p.authors || 'Unknown'}</div>
-            <a href="${p.url}" target="_blank" style="font-size:11.5px;color:var(--color-accent);text-decoration:none;margin-top:2px;display:inline-block">Open arXiv &rarr;</a>
+            <a href="${p.url}" target="_blank" style="font-size:11.5px;color:var(--color-accent);text-decoration:none;margin-top:2px;display:inline-block">Open Paper &rarr;</a>
           </td>
           <td style="padding:10px">
             <span class="score-badge ${scoreClass}" style="font-size:13px;padding:2px 8px">${p.avg_score}/10</span>
@@ -941,7 +953,7 @@ document.addEventListener('DOMContentLoaded', () => {
       tbody.querySelectorAll('.btn-view-paper').forEach(b => {
         b.addEventListener('click', (e) => {
           const pid = parseInt(e.target.getAttribute('data-id'));
-          this.openPaperDetailModal(pid);
+          this.renderHistorySelectedPane([pid]);
         });
       });
 
@@ -968,10 +980,40 @@ document.addEventListener('DOMContentLoaded', () => {
       const btnView = document.getElementById('btn-view-selected-papers');
       const chkSelectAll = document.getElementById('chk-select-all-papers');
 
-      if (countEl) countEl.textContent = `Selected (${count})`;
-      if (btnDel) btnDel.disabled = count === 0;
-      if (btnView) btnView.disabled = count === 0;
-      if (chkSelectAll) chkSelectAll.checked = count > 0 && count === this.allPapers.length;
+      const btnViewSelected = document.getElementById('btn-view-selected-papers');
+      if (btnViewSelected) {
+        btnViewSelected.addEventListener('click', () => {
+          const ids = Array.from(this.selectedPaperIds);
+          if (!ids.length) return alert('Select at least one paper from the list.');
+          this.renderHistorySelectedPane(ids);
+        });
+      }
+
+      ['history-search', 'history-filter-score', 'history-filter-source', 'history-sort'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('input', () => this.renderPaperCentricTable());
+      });
+
+      const btnClosePane = document.getElementById('btn-close-history-pane');
+      if (btnClosePane) {
+        btnClosePane.addEventListener('click', () => {
+          document.getElementById('history-selected-pane')?.classList.add('hidden');
+          document.getElementById('history-table-container')?.classList.remove('hidden');
+          document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
+          document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
+        });
+      }
+
+      const btnDeletePane = document.getElementById('btn-delete-pane-papers');
+      if (btnDeletePane) {
+        btnDeletePane.addEventListener('click', async () => {
+          await this.deleteSelectedPapers();
+          document.getElementById('history-selected-pane')?.classList.add('hidden');
+          document.getElementById('history-table-container')?.classList.remove('hidden');
+          document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
+          document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
+        });
+      }
     },
 
     async deleteSelectedPapers() {
@@ -987,6 +1029,135 @@ document.addEventListener('DOMContentLoaded', () => {
         this.loadHistory();
       }
     },
+
+    async renderHistorySelectedPane(paperIds) {
+      const pane = document.getElementById('history-selected-pane');
+      const tableContainer = document.getElementById('history-table-container');
+      const toolbarFilter = document.getElementById('history-filter-toolbar');
+      const toolbarBulk = document.getElementById('history-bulk-toolbar');
+      const titleEl = document.getElementById('history-pane-title');
+      const contentEl = document.getElementById('history-pane-content');
+
+      const ids = Array.isArray(paperIds) ? paperIds : [paperIds];
+      if (!ids.length) return;
+
+      if (tableContainer) tableContainer.classList.add('hidden');
+      if (toolbarFilter) toolbarFilter.classList.add('hidden');
+      if (toolbarBulk) toolbarBulk.classList.add('hidden');
+      if (pane) pane.classList.remove('hidden');
+
+      titleEl.textContent = ids.length === 1 ? 'Viewing Paper Details' : `Viewing Details for ${ids.length} Selected Papers`;
+      contentEl.innerHTML = '<p style="opacity:.6">Loading paper details, 5-judge panel verdicts and debate transcripts...</p>';
+
+      try {
+        const papers = await Promise.all(ids.map(id => fetch(`/api/papers/${id}`).then(r => {
+          if (!r.ok) throw new Error(`Paper #${id} fetch failed`);
+          return r.json();
+        })));
+
+        let html = '';
+        papers.forEach(p => {
+          const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
+          const chipsHtml = (p.verdicts || []).map(j => {
+            const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
+            return `<span class="judge-chip ${cls}">J${j.judge_run}: ${j.relevance_score}</span>`;
+          }).join(' ');
+
+          let judgesHtml = '';
+          if (p.verdicts && p.verdicts.length) {
+            judgesHtml = p.verdicts.map(j => {
+              const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
+              const reasonsList = Array.isArray(j.key_reasons) ? j.key_reasons.map(r => `<li>${r}</li>`).join('') : '';
+              return `
+                <div class="debate-panel" style="background:var(--color-surface);border-left:3px solid var(--color-accent);margin-bottom:8px">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+                    <strong style="font-size:13px">⚖️ Judge #${j.judge_run} (Seed: ${j.seed || 'N/A'})</strong>
+                    <span class="score-badge ${cls}" style="font-size:12px;padding:2px 6px">${j.relevance_score}/10</span>
+                  </div>
+                  <div style="font-size:12.5px;margin-bottom:4px"><strong>Verdict:</strong> ${j.verdict || 'N/A'}</div>
+                  ${reasonsList ? `<ul style="margin:4px 0 4px 16px;padding:0;font-size:12px;opacity:.85">${reasonsList}</ul>` : ''}
+                  ${j.suggested_use ? `<div style="font-size:12px;opacity:.8"><strong>Suggested Use:</strong> ${j.suggested_use}</div>` : ''}
+                </div>
+              `;
+            }).join('');
+          }
+
+          let debatesHtml = '';
+          if (p.debates && p.debates.length) {
+            debatesHtml = p.debates.map((rnd, i) => `
+              <div class="debate-panel debate-advocate" style="margin-bottom:8px">
+                <div style="font-weight:800;font-size:12px;color:oklch(38% 0.15 155);margin-bottom:4px">🟢 Advocate (Round ${rnd.round_num || (i + 1)})</div>
+                <div style="font-size:13px">${rnd.advocate_arg}</div>
+              </div>
+              <div class="debate-panel debate-skeptic" style="margin-bottom:8px">
+                <div style="font-weight:800;font-size:12px;color:var(--color-accent);margin-bottom:4px">🔴 Skeptic (Round ${rnd.round_num || (i + 1)})</div>
+                <div style="font-size:13px">${rnd.skeptic_arg}</div>
+              </div>
+            `).join('');
+          }
+
+          const isAclPaper = (p.categories || '').includes('ACL');
+          const sourceBadge = isAclPaper
+            ? '<span class="score-badge mid" style="font-size:11px;padding:2px 6px">ACL 2026</span>'
+            : '<span class="score-badge high" style="font-size:11px;padding:2px 6px">arXiv CS.CL</span>';
+
+          html += `
+            <div class="card elev-md" style="display:flex;flex-direction:column;gap:14px;padding:20px;border-left:4px solid var(--color-accent)">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+                <div>
+                  <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+                    ${sourceBadge}
+                    <span style="font-size:12px;opacity:.6">Evaluated: ${(p.eval_date || '').split('T')[0] || p.eval_date} using ${p.model_name || 'Gemini'}</span>
+                  </div>
+                  <h3 style="margin:0 0 6px">${p.title}</h3>
+                  <div style="font-size:13px;opacity:.75">👤 <strong>Authors:</strong> ${p.authors}</div>
+                  <a href="${p.url}" target="_blank" style="font-size:12.5px;color:var(--color-accent);text-decoration:none;margin-top:4px;display:inline-block">🔗 View Original Paper &rarr;</a>
+                </div>
+                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+                  <span class="score-badge ${scoreClass}" style="font-size:16px;padding:4px 12px">${p.avg_score}/10</span>
+                  <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${chipsHtml}</div>
+                </div>
+              </div>
+
+              ${p.problem_text ? `
+                <div style="padding:10px 14px;background:var(--color-surface);border:1px solid var(--color-divider)">
+                  <strong style="font-size:12.5px">🎯 Evaluated Research Problem:</strong>
+                  <div style="font-size:13px;margin-top:2px">${p.problem_text}</div>
+                </div>
+              ` : ''}
+
+              <details style="border:1px solid var(--color-divider);padding:10px 14px" open>
+                <summary style="font-weight:800;font-size:13px;cursor:pointer">📖 Abstract &amp; Technical Overview</summary>
+                <p style="font-size:13px;line-height:1.5;margin:8px 0 0;opacity:.9">${p.abstract}</p>
+                ${p.full_text ? `
+                  <div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--color-divider);max-height:220px;overflow-y:auto;font-size:12px;opacity:.85;font-family:monospace;white-space:pre-wrap">
+                    <strong>Full Extracted Paper Content:</strong>\n${p.full_text.substring(0, 3500)}...
+                  </div>
+                ` : ''}
+              </details>
+
+              ${judgesHtml ? `
+                <div>
+                  <h4 style="margin:0 0 8px;font-size:14px">⚖️ 5-Judge Panel Individual Verdicts</h4>
+                  ${judgesHtml}
+                </div>
+              ` : ''}
+
+              ${debatesHtml ? `
+                <div>
+                  <h4 style="margin:0 0 8px;font-size:14px">🗣️ Advocate vs. Skeptic Multi-Agent Debate Transcripts</h4>
+                  ${debatesHtml}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        });
+
+        contentEl.innerHTML = html;
+      } catch (err) {
+        contentEl.innerHTML = `<p style="color:var(--color-accent)">Failed to load paper details: ${err.message}</p>`;
+      }
+    }
 
     async openPaperDetailModal(paperIds) {
       const modal = document.getElementById('modal-paper-detail');
