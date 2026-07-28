@@ -39,6 +39,7 @@ document.addEventListener('DOMContentLoaded', () => {
           if (paneId === 'tab-history') {
             this.loadHistory();
           } else if (paneId === 'tab-recurring') {
+            this.autoFillScheduleForm(false);
             this.loadSchedules();
           }
         });
@@ -135,6 +136,43 @@ document.addEventListener('DOMContentLoaded', () => {
           document.getElementById('group-days-back').classList.toggle('hidden', isCount);
         });
       });
+    },
+
+    autoFillScheduleForm(force = false) {
+      const schProblem = document.getElementById('sch-problem');
+      const schLabel = document.getElementById('sch-label');
+      const sideProblem = document.getElementById('problem-statement')?.value.trim() || '';
+      const sideModel = document.getElementById('model-name')?.value;
+      const sideSource = document.getElementById('paper-source')?.value;
+      const sideAclTrack = document.getElementById('acl-track')?.value;
+      const sideKeyword = document.getElementById('keyword-filter')?.value;
+
+      if (schProblem && (force || !schProblem.value.trim())) {
+        schProblem.value = sideProblem || "Evaluate latest CS.CL & ACL 2026 papers matching high relevance criteria.";
+      }
+
+      if (schLabel && (force || !schLabel.value.trim())) {
+        const titleExcerpt = sideProblem ? sideProblem.substring(0, 30) : "Daily Paper Matcher";
+        schLabel.value = `Daily Evaluation: ${titleExcerpt}`;
+      }
+
+      if (sideModel && document.getElementById('sch-model')) {
+        document.getElementById('sch-model').value = sideModel;
+      }
+
+      if (sideSource && document.getElementById('sch-source')) {
+        document.getElementById('sch-source').value = sideSource;
+        document.getElementById('sch-source').dispatchEvent(new Event('change'));
+      }
+
+      if (sideAclTrack && document.getElementById('sch-acl-track')) {
+        document.getElementById('sch-acl-track').value = sideAclTrack;
+      }
+
+      if (sideKeyword && document.getElementById('sch-keyword')) {
+        document.getElementById('sch-keyword').value = sideKeyword;
+      }
+    },
 
       // Evaluation Action Buttons
       document.getElementById('btn-run-all').addEventListener('click', () => {
@@ -335,15 +373,31 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       }
 
+      const btnSyncSch = document.getElementById('btn-sync-sch-from-sidebar');
+      if (btnSyncSch) {
+        btnSyncSch.addEventListener('click', () => this.autoFillScheduleForm(true));
+      }
+
       // Create Schedule Form (1:1 with New Evaluation)
       document.getElementById('form-schedule').addEventListener('submit', async (e) => {
         e.preventDefault();
         const paperSource = document.getElementById('sch-source').value;
         const isAcl = paperSource === 'acl';
         const fetchMode = document.querySelector('input[name="sch-fetchmode"]:checked').value;
+
+        const sideProblem = document.getElementById('problem-statement')?.value.trim() || '';
+        let problemText = document.getElementById('sch-problem').value.trim();
+        if (!problemText) {
+          problemText = sideProblem || "Evaluate latest CS.CL & ACL 2026 papers matching high relevance criteria.";
+        }
+        let label = document.getElementById('sch-label').value.trim();
+        if (!label) {
+          label = `Daily Evaluation: ${problemText.substring(0, 30)}`;
+        }
+
         const payload = {
-          label: document.getElementById('sch-label').value.trim(),
-          problem_text: document.getElementById('sch-problem').value.trim(),
+          label: label,
+          problem_text: problemText,
           model_name: document.getElementById('sch-model').value,
           paper_source: paperSource,
           acl_track: document.getElementById('sch-acl-track').value,
@@ -353,7 +407,7 @@ document.addEventListener('DOMContentLoaded', () => {
           keyword_filter: document.getElementById('sch-keyword').value.trim(),
           min_score: parseInt(document.getElementById('sch-min-score').value),
           max_concurrent: parseInt(document.getElementById('sch-max-concurrent').value),
-          run_time: document.getElementById('sch-time').value,
+          run_time: document.getElementById('sch-time').value || "08:00",
         };
         await fetch('/api/schedules', {
           method: 'POST',

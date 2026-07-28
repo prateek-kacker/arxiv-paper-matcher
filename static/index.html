@@ -292,16 +292,19 @@
         <section id="tab-recurring" class="tab-pane">
           <div style="display:flex;flex-direction:column;gap:20px">
             <div class="card elev-sm">
-              <h5 style="margin:0 0 12px">➕ Create Schedule</h5>
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+                <h5 style="margin:0">➕ Create Schedule</h5>
+                <button type="button" id="btn-sync-sch-from-sidebar" class="btn btn-secondary" style="font-size:12px;padding:3px 8px">⚡ Auto-fill from Active Evaluation</button>
+              </div>
               <form id="form-schedule" style="display:flex;flex-direction:column;gap:14px">
                 <div class="field">
                   <label>Schedule label</label>
-                  <input id="sch-label" class="input" type="text" placeholder="e.g. Daily MT Evaluation" required />
+                  <input id="sch-label" class="input" type="text" placeholder="e.g. Daily Evaluation (Auto-generated if empty)" />
                 </div>
 
                 <div class="field">
                   <label>Research problem description</label>
-                  <textarea id="sch-problem" class="input" style="height:85px" placeholder="Describe the core research problem or paper topic..." required></textarea>
+                  <textarea id="sch-problem" class="input" style="height:85px" placeholder="Describe the research problem (Auto-filled from active evaluation if empty)..."></textarea>
                 </div>
 
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
