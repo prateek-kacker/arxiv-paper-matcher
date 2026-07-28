@@ -293,35 +293,98 @@
           <div style="display:flex;flex-direction:column;gap:20px">
             <div class="card elev-sm">
               <h5 style="margin:0 0 12px">➕ Create Schedule</h5>
-              <form id="form-schedule" style="display:flex;flex-direction:column;gap:12px">
+              <form id="form-schedule" style="display:flex;flex-direction:column;gap:14px">
                 <div class="field">
                   <label>Schedule label</label>
                   <input id="sch-label" class="input" type="text" placeholder="e.g. Daily MT Evaluation" required />
                 </div>
+
                 <div class="field">
-                  <label>Research problem</label>
-                  <textarea id="sch-problem" class="input" style="height:90px" required></textarea>
+                  <label>Research problem description</label>
+                  <textarea id="sch-problem" class="input" style="height:85px" placeholder="Describe the core research problem or paper topic..." required></textarea>
                 </div>
+
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
                   <div class="field">
                     <label>Gemini Model</label>
                     <select id="sch-model" class="input">
-                      <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
+                      <option value="gemini-3-pro-preview" selected>gemini-3-pro-preview</option>
                       <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
                       <option value="gemini-2.5-pro">gemini-2.5-pro</option>
                       <option value="gemini-2.5-flash">gemini-2.5-flash</option>
                       <option value="gemini-2.0-flash">gemini-2.0-flash</option>
                     </select>
                   </div>
+
                   <div class="field">
-                    <label>Daily run time</label>
-                    <input id="sch-time" class="input" type="time" value="08:00" required />
+                    <label>Paper Repository / Source</label>
+                    <select id="sch-source" class="input">
+                      <option value="arxiv" selected>arXiv CS.CL (Latest / Query)</option>
+                      <option value="acl">ACL 2026 Anthology (6,422 Papers)</option>
+                    </select>
                   </div>
-                  <div class="field">
-                    <label>Papers to fetch</label>
-                    <input id="sch-papers" class="input" type="number" min="1" max="100" value="10" required />
+
+                  <div id="sch-group-acl-track" class="field hidden">
+                    <label>ACL 2026 Track / Volume</label>
+                    <select id="sch-acl-track" class="input">
+                      <option value="all" selected>All ACL 2026 Papers (6,422)</option>
+                      <option value="acl-long">ACL-LONG Track (2,223)</option>
+                      <option value="findings-acl">Findings of ACL (1,634)</option>
+                      <option value="acl-short">ACL-SHORT Track (538)</option>
+                      <option value="acl-industry">ACL-INDUSTRY Track (189)</option>
+                      <option value="acl-demo">ACL-DEMO Track (112)</option>
+                      <option value="acl-srw">ACL-SRW Student Research (85)</option>
+                      <option value="workshops">ACL Workshops (1,641)</option>
+                    </select>
                   </div>
                 </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+                  <div class="field">
+                    <label>Fetch Mode</label>
+                    <div style="display:flex;gap:12px;margin-top:6px">
+                      <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
+                        <input type="radio" name="sch-fetchmode" value="count" checked /> By Count
+                      </label>
+                      <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
+                        <input type="radio" name="sch-fetchmode" value="days" /> By Days
+                      </label>
+                    </div>
+                  </div>
+
+                  <div id="sch-group-count" class="field">
+                    <label>Papers to fetch: <strong id="sch-val-papers">10</strong></label>
+                    <input id="sch-papers" type="range" min="1" max="100" value="10" step="1" style="margin-top:6px" />
+                  </div>
+
+                  <div id="sch-group-days" class="field hidden">
+                    <label>Days back: <strong id="sch-val-days">7</strong></label>
+                    <input id="sch-days-back" type="range" min="1" max="90" value="7" step="1" style="margin-top:6px" />
+                  </div>
+                </div>
+
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
+                  <div class="field">
+                    <label>Optional keyword filter</label>
+                    <input id="sch-keyword" class="input" type="text" placeholder="e.g. summarization" />
+                  </div>
+
+                  <div class="field">
+                    <label>Min score highlight: <strong id="sch-val-minscore">6</strong></label>
+                    <input id="sch-min-score" type="range" min="1" max="10" value="6" step="1" style="margin-top:6px" />
+                  </div>
+
+                  <div class="field">
+                    <label>Parallel evaluations: <strong id="sch-val-concurrent">3</strong></label>
+                    <input id="sch-max-concurrent" type="range" min="1" max="10" value="3" step="1" style="margin-top:6px" />
+                  </div>
+
+                  <div class="field">
+                    <label>Daily run time (server time)</label>
+                    <input id="sch-time" class="input" type="time" value="08:00" required />
+                  </div>
+                </div>
+
                 <button type="submit" class="btn btn-primary" style="align-self:flex-start">Create Schedule</button>
               </form>
             </div>
@@ -411,21 +474,24 @@
 
   <!-- EDIT SCHEDULE MODAL -->
   <div id="modal-edit-schedule" class="modal-backdrop hidden">
-    <div class="modal-dialog">
-      <h3 id="modal-edit-title" style="margin:0">Edit Schedule</h3>
-      <form id="form-edit-schedule" style="display:flex;flex-direction:column;gap:12px">
+    <div class="modal-dialog" style="max-width:700px">
+      <h3 id="modal-edit-title" style="margin:0 0 12px">Edit Schedule</h3>
+      <form id="form-edit-schedule" style="display:flex;flex-direction:column;gap:14px">
         <input type="hidden" id="edit-sch-id" />
+        
         <div class="field">
           <label>Schedule label</label>
           <input id="edit-sch-label" class="input" type="text" required />
         </div>
+
         <div class="field">
-          <label>Research problem</label>
-          <textarea id="edit-sch-problem" class="input" style="height:90px" required></textarea>
+          <label>Research problem description</label>
+          <textarea id="edit-sch-problem" class="input" style="height:85px" required></textarea>
         </div>
+
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
           <div class="field">
-            <label>Model</label>
+            <label>Gemini Model</label>
             <select id="edit-sch-model" class="input">
               <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
               <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
@@ -434,15 +500,76 @@
               <option value="gemini-2.0-flash">gemini-2.0-flash</option>
             </select>
           </div>
+
           <div class="field">
-            <label>Daily run time</label>
-            <input id="edit-sch-time" class="input" type="time" required />
+            <label>Paper Repository / Source</label>
+            <select id="edit-sch-source" class="input">
+              <option value="arxiv">arXiv CS.CL (Latest / Query)</option>
+              <option value="acl">ACL 2026 Anthology (6,422 Papers)</option>
+            </select>
           </div>
-          <div class="field">
-            <label>Papers to fetch</label>
-            <input id="edit-sch-papers" class="input" type="number" min="1" max="100" value="10" required />
+
+          <div id="edit-sch-group-acl-track" class="field hidden">
+            <label>ACL 2026 Track / Volume</label>
+            <select id="edit-sch-acl-track" class="input">
+              <option value="all">All ACL 2026 Papers (6,422)</option>
+              <option value="acl-long">ACL-LONG Track (2,223)</option>
+              <option value="findings-acl">Findings of ACL (1,634)</option>
+              <option value="acl-short">ACL-SHORT Track (538)</option>
+              <option value="acl-industry">ACL-INDUSTRY Track (189)</option>
+              <option value="acl-demo">ACL-DEMO Track (112)</option>
+              <option value="acl-srw">ACL-SRW Student Research (85)</option>
+              <option value="workshops">ACL Workshops (1,641)</option>
+            </select>
           </div>
         </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
+          <div class="field">
+            <label>Fetch Mode</label>
+            <div style="display:flex;gap:12px;margin-top:6px">
+              <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
+                <input type="radio" name="edit-sch-fetchmode" value="count" checked /> By Count
+              </label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:13px;cursor:pointer">
+                <input type="radio" name="edit-sch-fetchmode" value="days" /> By Days
+              </label>
+            </div>
+          </div>
+
+          <div id="edit-sch-group-count" class="field">
+            <label>Papers to fetch: <strong id="edit-sch-val-papers">10</strong></label>
+            <input id="edit-sch-papers" type="range" min="1" max="100" value="10" step="1" style="margin-top:6px" />
+          </div>
+
+          <div id="edit-sch-group-days" class="field hidden">
+            <label>Days back: <strong id="edit-sch-val-days">7</strong></label>
+            <input id="edit-sch-days-back" type="range" min="1" max="90" value="7" step="1" style="margin-top:6px" />
+          </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:12px">
+          <div class="field">
+            <label>Optional keyword filter</label>
+            <input id="edit-sch-keyword" class="input" type="text" placeholder="e.g. summarization" />
+          </div>
+
+          <div class="field">
+            <label>Min score highlight: <strong id="edit-sch-val-minscore">6</strong></label>
+            <input id="edit-sch-min-score" type="range" min="1" max="10" value="6" step="1" style="margin-top:6px" />
+          </div>
+
+          <div class="field">
+            <label>Parallel evaluations: <strong id="edit-sch-val-concurrent">3</strong></label>
+            <input id="edit-sch-max-concurrent" type="range" min="1" max="10" value="3" step="1" style="margin-top:6px" />
+          </div>
+
+          <div class="field">
+            <label>Daily run time (server time)</label>
+            <input id="edit-sch-time" class="input" type="time" required />
+          </div>
+        </div>
+
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
           <button type="button" id="btn-cancel-edit" class="btn btn-secondary">Cancel</button>
           <button type="submit" class="btn btn-primary">Save Changes</button>

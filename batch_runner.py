@@ -117,6 +117,8 @@ def main():
             api_key=api_key,
             problem_statement=sch["problem_text"],
             model_name=sch["model_name"],
+            paper_source=sch.get("paper_source") or "arxiv",
+            acl_track=sch.get("acl_track") or "all",
             max_papers=sch.get("max_papers"),
             days_back=sch.get("days_back"),
             keyword_filter=sch.get("keyword_filter") or "",

@@ -153,13 +153,104 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('progress-card').classList.add('hidden');
       });
 
+      // Range Value Badge Syncing for Create Schedule
+      const syncSchRange = (id, targetId) => {
+        const input = document.getElementById(id);
+        const target = document.getElementById(targetId);
+        if (input && target) {
+          input.addEventListener('input', () => { target.textContent = input.value; });
+        }
+      };
+      syncSchRange('sch-papers', 'sch-val-papers');
+      syncSchRange('sch-days-back', 'sch-val-days');
+      syncSchRange('sch-min-score', 'sch-val-minscore');
+      syncSchRange('sch-max-concurrent', 'sch-val-concurrent');
+
+      syncSchRange('edit-sch-papers', 'edit-sch-val-papers');
+      syncSchRange('edit-sch-days-back', 'edit-sch-val-days');
+      syncSchRange('edit-sch-min-score', 'edit-sch-val-minscore');
+      syncSchRange('edit-sch-max-concurrent', 'edit-sch-val-concurrent');
+
+      // Schedule Source & Track toggles
+      const bindSourceToggle = (srcId, trackGroupId) => {
+        const src = document.getElementById(srcId);
+        const grp = document.getElementById(trackGroupId);
+        if (src && grp) {
+          src.addEventListener('change', () => {
+            if (src.value === 'acl') grp.classList.remove('hidden');
+            else grp.classList.add('hidden');
+          });
+        }
+      };
+      bindSourceToggle('sch-source', 'sch-group-acl-track');
+      bindSourceToggle('edit-sch-source', 'edit-sch-group-acl-track');
+
+      // Schedule Fetch Mode toggles
+      const bindFetchToggle = (radioName, countGrpId, daysGrpId) => {
+        document.querySelectorAll(`input[name="${radioName}"]`).forEach(r => {
+          r.addEventListener('change', (e) => {
+            const countGrp = document.getElementById(countGrpId);
+            const daysGrp = document.getElementById(daysGrpId);
+            if (e.target.value === 'days') {
+              countGrp.classList.add('hidden');
+              daysGrp.classList.remove('hidden');
+            } else {
+              countGrp.classList.remove('hidden');
+              daysGrp.classList.add('hidden');
+            }
+          });
+        });
+      };
+      bindFetchToggle('sch-fetchmode', 'sch-group-count', 'sch-group-days');
+      bindFetchToggle('edit-sch-fetchmode', 'edit-sch-group-count', 'edit-sch-group-days');
+
+      // Add to Recurring Button (copies ALL sidebar options to Create Schedule form)
       document.getElementById('btn-add-recurring').addEventListener('click', () => {
         const problem = document.getElementById('problem-statement').value.trim();
         if (!problem) return alert('Please describe your research problem first.');
 
+        // Copy sidebar options
+        const model = document.getElementById('model-name').value;
+        const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
+        const aclTrack = document.getElementById('acl-track')?.value || 'all';
+        const fetchMode = document.querySelector('input[name="fetchmode"]:checked')?.value || 'count';
+        const maxPapers = document.getElementById('max-papers').value;
+        const daysBack = document.getElementById('days-back').value;
+        const keyword = document.getElementById('keyword-filter').value.trim();
+        const minScore = document.getElementById('min-score').value;
+        const concurrent = document.getElementById('max-concurrent').value;
+
         // Switch to recurring tab
         document.querySelector('.tab-btn[data-tab="tab-recurring"]').click();
+
         document.getElementById('sch-problem').value = problem;
+        document.getElementById('sch-model').value = model;
+        document.getElementById('sch-source').value = paperSource;
+        document.getElementById('sch-acl-track').value = aclTrack;
+        
+        if (paperSource === 'acl') {
+          document.getElementById('sch-group-acl-track').classList.remove('hidden');
+        } else {
+          document.getElementById('sch-group-acl-track').classList.add('hidden');
+        }
+
+        const fmRadio = document.querySelector(`input[name="sch-fetchmode"][value="${fetchMode}"]`);
+        if (fmRadio) {
+          fmRadio.checked = true;
+          fmRadio.dispatchEvent(new Event('change'));
+        }
+
+        document.getElementById('sch-papers').value = maxPapers;
+        document.getElementById('sch-val-papers').textContent = maxPapers;
+        document.getElementById('sch-days-back').value = daysBack;
+        document.getElementById('sch-val-days').textContent = daysBack;
+        document.getElementById('sch-keyword').value = keyword;
+        document.getElementById('sch-min-score').value = minScore;
+        document.getElementById('sch-val-minscore').textContent = minScore;
+        document.getElementById('sch-max-concurrent').value = concurrent;
+        document.getElementById('sch-val-concurrent').textContent = concurrent;
+
+        document.getElementById('sch-label').focus();
       });
 
       // Export JSON
@@ -213,38 +304,52 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       }
 
-      // Create Schedule Form
+      // Create Schedule Form (1:1 with New Evaluation)
       document.getElementById('form-schedule').addEventListener('submit', async (e) => {
         e.preventDefault();
+        const fetchMode = document.querySelector('input[name="sch-fetchmode"]:checked').value;
         const payload = {
           label: document.getElementById('sch-label').value.trim(),
           problem_text: document.getElementById('sch-problem').value.trim(),
           model_name: document.getElementById('sch-model').value,
+          paper_source: document.getElementById('sch-source').value,
+          acl_track: document.getElementById('sch-acl-track').value,
+          fetch_mode: fetchMode,
+          max_papers: fetchMode === 'count' ? parseInt(document.getElementById('sch-papers').value) : null,
+          days_back: fetchMode === 'days' ? parseInt(document.getElementById('sch-days-back').value) : null,
+          keyword_filter: document.getElementById('sch-keyword').value.trim(),
+          min_score: parseInt(document.getElementById('sch-min-score').value),
+          max_concurrent: parseInt(document.getElementById('sch-max-concurrent').value),
           run_time: document.getElementById('sch-time').value,
-          max_papers: parseInt(document.getElementById('sch-papers').value) || 10,
-          fetch_mode: 'count',
         };
         await fetch('/api/schedules', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         });
-        alert('Created recurring schedule!');
+        alert('Created recurring schedule with full evaluation configuration!');
         document.getElementById('form-schedule').reset();
         this.loadSchedules();
       });
 
-      // Edit Schedule Modal Form
+      // Edit Schedule Modal Form (1:1 with New Evaluation)
       document.getElementById('form-edit-schedule').addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = document.getElementById('edit-sch-id').value;
+        const fetchMode = document.querySelector('input[name="edit-sch-fetchmode"]:checked').value;
         const payload = {
           label: document.getElementById('edit-sch-label').value.trim(),
           problem_text: document.getElementById('edit-sch-problem').value.trim(),
           model_name: document.getElementById('edit-sch-model').value,
+          paper_source: document.getElementById('edit-sch-source').value,
+          acl_track: document.getElementById('edit-sch-acl-track').value,
+          fetch_mode: fetchMode,
+          max_papers: fetchMode === 'count' ? parseInt(document.getElementById('edit-sch-papers').value) : null,
+          days_back: fetchMode === 'days' ? parseInt(document.getElementById('edit-sch-days-back').value) : null,
+          keyword_filter: document.getElementById('edit-sch-keyword').value.trim(),
+          min_score: parseInt(document.getElementById('edit-sch-min-score').value),
+          max_concurrent: parseInt(document.getElementById('edit-sch-max-concurrent').value),
           run_time: document.getElementById('edit-sch-time').value,
-          max_papers: parseInt(document.getElementById('edit-sch-papers').value) || 10,
-          fetch_mode: 'count',
         };
         await fetch(`/api/schedules/${id}`, {
           method: 'PUT',
@@ -573,20 +678,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
       this.currentSchedules.forEach(s => {
         const statusDot = s.is_active ? '🟢' : '⚪';
+        const sourceLabel = (s.paper_source === 'acl')
+          ? `ACL 2026 (${(s.acl_track || 'all').toUpperCase()} Track)`
+          : 'arXiv CS.CL';
+        const fetchLabel = s.fetch_mode === 'count'
+          ? `${s.max_papers || 10} papers`
+          : `last ${s.days_back || 7} days`;
+        const kwLabel = s.keyword_filter ? ` | Keyword: "${s.keyword_filter}"` : '';
+
         const card = document.createElement('div');
         card.className = 'card';
         card.innerHTML = `
-          <div style="display:flex;justify-content:space-between;align-items:center">
-            <div style="font-weight:800;font-size:15px">${statusDot} #${s.id} · ${s.label || `Schedule #${s.id}`} · ${s.run_time} daily</div>
-            <div style="display:flex;gap:6px">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+            <div>
+              <div style="font-weight:800;font-size:15px">${statusDot} #${s.id} · ${s.label || `Schedule #${s.id}`} · ⏰ ${s.run_time} daily</div>
+              <div style="font-size:12px;opacity:.65;margin-top:2px">
+                📚 <strong>Source:</strong> ${sourceLabel} | 📦 <strong>Fetch:</strong> ${fetchLabel}${kwLabel} | ⚙️ <strong>Model:</strong> ${s.model_name}
+              </div>
+              <div style="font-size:12px;opacity:.65;margin-top:2px">
+                🎯 <strong>Highlight Score:</strong> ≥${s.min_score || 6}/10 | ⚡ <strong>Workers:</strong> ${s.max_concurrent || 3}
+              </div>
+            </div>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end">
               <button class="btn btn-secondary btn-run-sch" data-id="${s.id}">Run Now</button>
               <button class="btn btn-secondary btn-toggle-sch" data-id="${s.id}" data-active="${s.is_active}">${s.is_active ? 'Pause' : 'Activate'}</button>
               <button class="btn btn-secondary btn-edit-sch" data-id="${s.id}">Edit</button>
               <button class="btn btn-secondary btn-del-sch" data-id="${s.id}" style="color:var(--color-accent)">Delete</button>
             </div>
           </div>
-          <div style="font-size:12.5px;opacity:.7">Model: ${s.model_name} | Fetch: ${s.fetch_mode === 'count' ? `${s.max_papers} papers` : `${s.days_back} days`}</div>
-          <div style="font-size:13px">${s.problem_text}</div>
+
+          <div style="font-size:13px;margin-top:8px"><strong>Problem:</strong> ${s.problem_text}</div>
+          ${s.last_run_at ? `<div style="font-size:11.5px;opacity:.55;margin-top:4px">Last run: ${s.last_run_at} — Status: ${s.last_status || 'N/A'}</div>` : ''}
         `;
         container.appendChild(card);
       });
@@ -624,8 +746,33 @@ document.addEventListener('DOMContentLoaded', () => {
           document.getElementById('edit-sch-label').value = sch.label || '';
           document.getElementById('edit-sch-problem').value = sch.problem_text;
           document.getElementById('edit-sch-model').value = sch.model_name;
-          document.getElementById('edit-sch-time').value = sch.run_time;
+          document.getElementById('edit-sch-source').value = sch.paper_source || 'arxiv';
+          document.getElementById('edit-sch-acl-track').value = sch.acl_track || 'all';
+          
+          if ((sch.paper_source || 'arxiv') === 'acl') {
+            document.getElementById('edit-sch-group-acl-track').classList.remove('hidden');
+          } else {
+            document.getElementById('edit-sch-group-acl-track').classList.add('hidden');
+          }
+
+          const fetchMode = sch.fetch_mode || 'count';
+          const radio = document.querySelector(`input[name="edit-sch-fetchmode"][value="${fetchMode}"]`);
+          if (radio) {
+            radio.checked = true;
+            radio.dispatchEvent(new Event('change'));
+          }
+
           document.getElementById('edit-sch-papers').value = sch.max_papers || 10;
+          document.getElementById('edit-sch-val-papers').textContent = sch.max_papers || 10;
+          document.getElementById('edit-sch-days-back').value = sch.days_back || 7;
+          document.getElementById('edit-sch-val-days').textContent = sch.days_back || 7;
+          document.getElementById('edit-sch-keyword').value = sch.keyword_filter || '';
+          document.getElementById('edit-sch-min-score').value = sch.min_score || 6;
+          document.getElementById('edit-sch-val-minscore').textContent = sch.min_score || 6;
+          document.getElementById('edit-sch-max-concurrent').value = sch.max_concurrent || 3;
+          document.getElementById('edit-sch-val-concurrent').textContent = sch.max_concurrent || 3;
+          document.getElementById('edit-sch-time').value = sch.run_time || '08:00';
+
           document.getElementById('modal-edit-schedule').classList.remove('hidden');
         }
       }));

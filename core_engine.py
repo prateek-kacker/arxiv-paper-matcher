@@ -177,6 +177,8 @@ def init_db():
             label           TEXT,
             problem_text    TEXT NOT NULL,
             model_name      TEXT NOT NULL,
+            paper_source    TEXT DEFAULT 'arxiv',
+            acl_track       TEXT DEFAULT 'all',
             fetch_mode      TEXT NOT NULL,
             max_papers      INTEGER,
             days_back       INTEGER,
@@ -208,14 +210,16 @@ def init_db():
     """)
     conn.commit()
 
-    # Migration columns for background evaluation tracking
-    for col_def in [
-        "status TEXT DEFAULT 'COMPLETED'",
-        "total_papers INTEGER DEFAULT 0",
-        "completed_papers INTEGER DEFAULT 0",
+    # Migration columns for evaluations & recurring_schedules tracking
+    for table, col_def in [
+        ("evaluations", "status TEXT DEFAULT 'COMPLETED'"),
+        ("evaluations", "total_papers INTEGER DEFAULT 0"),
+        ("evaluations", "completed_papers INTEGER DEFAULT 0"),
+        ("recurring_schedules", "paper_source TEXT DEFAULT 'arxiv'"),
+        ("recurring_schedules", "acl_track TEXT DEFAULT 'all'"),
     ]:
         try:
-            conn.execute(f"ALTER TABLE evaluations ADD COLUMN {col_def}")
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
             conn.commit()
         except Exception:
             pass
@@ -426,6 +430,8 @@ def create_recurring_schedule(
     label: str,
     problem_text: str,
     model_name: str,
+    paper_source: str,
+    acl_track: str,
     fetch_mode: str,
     max_papers: Optional[int],
     days_back: Optional[int],
@@ -438,11 +444,11 @@ def create_recurring_schedule(
     conn = get_db()
     cur = conn.execute(
         """INSERT INTO recurring_schedules
-           (label, problem_text, model_name, fetch_mode, max_papers, days_back,
+           (label, problem_text, model_name, paper_source, acl_track, fetch_mode, max_papers, days_back,
             keyword_filter, min_score, max_concurrent, run_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
-            label, problem_text, model_name, fetch_mode, max_papers, days_back,
+            label, problem_text, model_name, paper_source, acl_track, fetch_mode, max_papers, days_back,
             keyword_filter, min_score, max_concurrent, run_time,
         ),
     )
@@ -459,6 +465,8 @@ def update_recurring_schedule(
     label: str,
     problem_text: str,
     model_name: str,
+    paper_source: str,
+    acl_track: str,
     fetch_mode: str,
     max_papers: Optional[int],
     days_back: Optional[int],
@@ -471,13 +479,14 @@ def update_recurring_schedule(
     conn = get_db()
     conn.execute(
         """UPDATE recurring_schedules
-           SET label = ?, problem_text = ?, model_name = ?, fetch_mode = ?,
-               max_papers = ?, days_back = ?, keyword_filter = ?, min_score = ?,
+           SET label = ?, problem_text = ?, model_name = ?, paper_source = ?, acl_track = ?,
+               fetch_mode = ?, max_papers = ?, days_back = ?, keyword_filter = ?, min_score = ?,
                max_concurrent = ?, run_time = ?
            WHERE id = ?""",
         (
-            label, problem_text, model_name, fetch_mode, max_papers, days_back,
-            keyword_filter, min_score, max_concurrent, run_time, schedule_id,
+            label, problem_text, model_name, paper_source, acl_track,
+            fetch_mode, max_papers, days_back, keyword_filter, min_score,
+            max_concurrent, run_time, schedule_id,
         ),
     )
     conn.commit()
@@ -928,6 +937,8 @@ def _run_evaluation_headless(
     api_key: str,
     problem_statement: str,
     model_name: str,
+    paper_source: str = "arxiv",
+    acl_track: str = "all",
     max_papers: Optional[int],
     days_back: Optional[int],
     keyword_filter: str,
@@ -944,7 +955,10 @@ def _run_evaluation_headless(
 
     _cb("fetching", 0, 0)
     try:
-        papers = fetch_arxiv_papers(max_results=max_papers, search_query=keyword_filter, days_back=days_back)
+        if paper_source == "acl":
+            papers = fetch_acl_papers(max_results=max_papers, search_query=keyword_filter, volume_filter=acl_track)
+        else:
+            papers = fetch_arxiv_papers(max_results=max_papers, search_query=keyword_filter, days_back=days_back)
     except Exception as e:
         return None, [], f"Failed to fetch papers: {e}"
 
