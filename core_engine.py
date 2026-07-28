@@ -640,7 +640,8 @@ def fetch_arxiv_papers(
 ) -> list[Paper]:
     category_query = "cat:cs.CL"
     if search_query and search_query.strip():
-        full_query = f"{category_query} AND ({search_query.strip()})"
+        q_term = search_query.strip()
+        full_query = f"{category_query} AND (ti:\"{q_term}\" OR abs:\"{q_term}\")"
     else:
         full_query = category_query
 
@@ -711,12 +712,13 @@ def fetch_acl_papers(
                          AND paper_key NOT LIKE '%.acl-srw.%'"""
 
     if search_query and search_query.strip():
-        query_sql += " AND (title LIKE ? OR abstract LIKE ? OR authors LIKE ?)"
+        query_sql += " AND (title LIKE ? OR abstract LIKE ?)"
         q = f"%{search_query.strip()}%"
-        params.extend([q, q, q])
+        params.extend([q, q])
 
-    query_sql += " LIMIT ?"
-    params.append(max_results or 50)
+    if max_results and max_results > 0:
+        query_sql += " LIMIT ?"
+        params.append(max_results)
 
     rows = conn.execute(query_sql, params).fetchall()
 

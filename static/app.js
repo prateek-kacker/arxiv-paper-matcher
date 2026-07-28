@@ -114,7 +114,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
           if (isAcl) {
             if (groupDaysBack) groupDaysBack.classList.add('hidden');
-            if (groupPaperCount) groupPaperCount.classList.remove('hidden');
+            if (groupPaperCount) groupPaperCount.classList.add('hidden');
             const radioCount = document.querySelector('input[name="fetchmode"][value="count"]');
             if (radioCount) radioCount.checked = true;
           } else {
@@ -205,7 +205,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (isAcl) {
               if (daysGrp) daysGrp.classList.add('hidden');
-              if (countGrp) countGrp.classList.remove('hidden');
+              if (countGrp) countGrp.classList.add('hidden');
               const radioCount = document.querySelector(`input[name="${radioName}"][value="count"]`);
               if (radioCount) radioCount.checked = true;
             } else {
@@ -338,16 +338,18 @@ document.addEventListener('DOMContentLoaded', () => {
       // Create Schedule Form (1:1 with New Evaluation)
       document.getElementById('form-schedule').addEventListener('submit', async (e) => {
         e.preventDefault();
+        const paperSource = document.getElementById('sch-source').value;
+        const isAcl = paperSource === 'acl';
         const fetchMode = document.querySelector('input[name="sch-fetchmode"]:checked').value;
         const payload = {
           label: document.getElementById('sch-label').value.trim(),
           problem_text: document.getElementById('sch-problem').value.trim(),
           model_name: document.getElementById('sch-model').value,
-          paper_source: document.getElementById('sch-source').value,
+          paper_source: paperSource,
           acl_track: document.getElementById('sch-acl-track').value,
           fetch_mode: fetchMode,
-          max_papers: fetchMode === 'count' ? parseInt(document.getElementById('sch-papers').value) : null,
-          days_back: fetchMode === 'days' ? parseInt(document.getElementById('sch-days-back').value) : null,
+          max_papers: isAcl ? null : (fetchMode === 'count' ? parseInt(document.getElementById('sch-papers').value) : null),
+          days_back: isAcl ? null : (fetchMode === 'days' ? parseInt(document.getElementById('sch-days-back').value) : null),
           keyword_filter: document.getElementById('sch-keyword').value.trim(),
           min_score: parseInt(document.getElementById('sch-min-score').value),
           max_concurrent: parseInt(document.getElementById('sch-max-concurrent').value),
@@ -367,16 +369,18 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('form-edit-schedule').addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = document.getElementById('edit-sch-id').value;
+        const paperSource = document.getElementById('edit-sch-source').value;
+        const isAcl = paperSource === 'acl';
         const fetchMode = document.querySelector('input[name="edit-sch-fetchmode"]:checked').value;
         const payload = {
           label: document.getElementById('edit-sch-label').value.trim(),
           problem_text: document.getElementById('edit-sch-problem').value.trim(),
           model_name: document.getElementById('edit-sch-model').value,
-          paper_source: document.getElementById('edit-sch-source').value,
+          paper_source: paperSource,
           acl_track: document.getElementById('edit-sch-acl-track').value,
           fetch_mode: fetchMode,
-          max_papers: fetchMode === 'count' ? parseInt(document.getElementById('edit-sch-papers').value) : null,
-          days_back: fetchMode === 'days' ? parseInt(document.getElementById('edit-sch-days-back').value) : null,
+          max_papers: isAcl ? null : (fetchMode === 'count' ? parseInt(document.getElementById('edit-sch-papers').value) : null),
+          days_back: isAcl ? null : (fetchMode === 'days' ? parseInt(document.getElementById('edit-sch-days-back').value) : null),
           keyword_filter: document.getElementById('edit-sch-keyword').value.trim(),
           min_score: parseInt(document.getElementById('edit-sch-min-score').value),
           max_concurrent: parseInt(document.getElementById('edit-sch-max-concurrent').value),
