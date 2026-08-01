@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     pastEvaluations: [],
     allPapers: [],
     selectedPaperIds: new Set(),
+    selectedEvalIds: new Set(),
     abortController: null,
 
     init() {
@@ -39,22 +40,6 @@ document.addEventListener('DOMContentLoaded', () => {
       document.getElementById('btn-go-to-history')?.addEventListener('click', () => {
         this.navigateToTab('tab-history');
       });
-    },
-
-    navigateToTab(tabId) {
-      document.querySelectorAll('.tab-btn').forEach(t => {
-        t.classList.toggle('active', t.getAttribute('data-tab') === tabId);
-      });
-      document.querySelectorAll('.tab-pane').forEach(p => {
-        p.classList.toggle('active', p.id === tabId);
-      });
-      if (tabId === 'tab-history') {
-        this.loadHistory();
-      } else if (tabId === 'tab-recurring') {
-        this.autoFillScheduleForm(false);
-        this.loadSchedules();
-      }
-    },
 
       // Subtabs (Works for both Results dashboard and History sub-tabs!)
       document.addEventListener('click', (e) => {
@@ -71,9 +56,32 @@ document.addEventListener('DOMContentLoaded', () => {
             const paneId = btn.getAttribute('data-subtab');
             const pane = document.getElementById(paneId);
             if (pane) pane.classList.add('active');
+
+            // Reset paper detail pane view when switching History subtabs
+            const historySelectedPane = document.getElementById('history-selected-pane');
+            if (historySelectedPane) historySelectedPane.classList.add('hidden');
+            document.getElementById('history-table-container')?.classList.remove('hidden');
+            document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
           }
         }
       });
+    },
+
+    navigateToTab(tabId) {
+      document.querySelectorAll('.tab-btn').forEach(t => {
+        t.classList.toggle('active', t.getAttribute('data-tab') === tabId);
+      });
+      document.querySelectorAll('.tab-pane').forEach(p => {
+        p.classList.toggle('active', p.id === tabId);
+      });
+      if (tabId === 'tab-history') {
+        const runsSubtabBtn = document.querySelector('.subtab-btn[data-subtab="history-subtab-runs"]');
+        if (runsSubtabBtn) runsSubtabBtn.click();
+        this.loadHistory();
+      } else if (tabId === 'tab-recurring') {
+        this.autoFillScheduleForm(false);
+        this.loadSchedules();
+      }
     },
 
     // ── Config ──
@@ -110,6 +118,8 @@ document.addEventListener('DOMContentLoaded', () => {
       bindVal('days-back', 'val-days-back');
       bindVal('min-score', 'val-min-score');
       bindVal('max-concurrent', 'val-max-concurrent');
+      bindVal('history-filter-min-score', 'val-history-filter-min-score');
+      bindVal('history-filter-max-score', 'val-history-filter-max-score');
 
       // Paper Source Change Control (arXiv vs ACL 2026 for New Evaluation Sidebar)
       const paperSourceSelect = document.getElementById('paper-source');
@@ -147,46 +157,9 @@ document.addEventListener('DOMContentLoaded', () => {
           document.getElementById('group-days-back').classList.toggle('hidden', isCount);
         });
       });
-    },
-
-    autoFillScheduleForm(force = false) {
-      const schProblem = document.getElementById('sch-problem');
-      const schLabel = document.getElementById('sch-label');
-      const sideProblem = document.getElementById('problem-statement')?.value.trim() || '';
-      const sideModel = document.getElementById('model-name')?.value;
-      const sideSource = document.getElementById('paper-source')?.value;
-      const sideAclTrack = document.getElementById('acl-track')?.value;
-      const sideKeyword = document.getElementById('keyword-filter')?.value;
-
-      if (schProblem && (force || !schProblem.value.trim())) {
-        schProblem.value = sideProblem || "Evaluate latest CS.CL & ACL 2026 papers matching high relevance criteria.";
-      }
-
-      if (schLabel && (force || !schLabel.value.trim())) {
-        const titleExcerpt = sideProblem ? sideProblem.substring(0, 30) : "Daily Paper Matcher";
-        schLabel.value = `Daily Evaluation: ${titleExcerpt}`;
-      }
-
-      if (sideModel && document.getElementById('sch-model')) {
-        document.getElementById('sch-model').value = sideModel;
-      }
-
-      if (sideSource && document.getElementById('sch-source')) {
-        document.getElementById('sch-source').value = sideSource;
-        document.getElementById('sch-source').dispatchEvent(new Event('change'));
-      }
-
-      if (sideAclTrack && document.getElementById('sch-acl-track')) {
-        document.getElementById('sch-acl-track').value = sideAclTrack;
-      }
-
-      if (sideKeyword && document.getElementById('sch-keyword')) {
-        document.getElementById('sch-keyword').value = sideKeyword;
-      }
-    },
 
       // Evaluation Action Buttons
-      document.getElementById('btn-run-all').addEventListener('click', () => {
+      document.getElementById('btn-run-all')?.addEventListener('click', () => {
         const execMode = document.querySelector('input[name="execmode"]:checked')?.value || 'live';
         if (execMode === 'background') {
           this.startBackgroundEvaluation();
@@ -195,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       });
 
-      document.getElementById('btn-stop-eval').addEventListener('click', () => {
+      document.getElementById('btn-stop-eval')?.addEventListener('click', () => {
         if (this.abortController) {
           this.abortController.abort();
           this.abortController = null;
@@ -214,10 +187,10 @@ document.addEventListener('DOMContentLoaded', () => {
         this.loadHistory();
       });
 
-      document.getElementById('btn-clear-results').addEventListener('click', () => {
+      document.getElementById('btn-clear-results')?.addEventListener('click', () => {
         this.currentResults = [];
-        document.getElementById('dashboard-container').classList.add('hidden');
-        document.getElementById('progress-card').classList.add('hidden');
+        document.getElementById('dashboard-container')?.classList.add('hidden');
+        document.getElementById('progress-card')?.classList.add('hidden');
       });
 
       // Range Value Badge Syncing for Create Schedule
@@ -290,7 +263,7 @@ document.addEventListener('DOMContentLoaded', () => {
       bindFetchToggle('edit-sch-fetchmode', 'edit-sch-group-count', 'edit-sch-group-days');
 
       // Add to Recurring Button (copies ALL sidebar options to Create Schedule form)
-      document.getElementById('btn-add-recurring').addEventListener('click', () => {
+      document.getElementById('btn-add-recurring')?.addEventListener('click', () => {
         const problem = document.getElementById('problem-statement').value.trim();
         if (!problem) return alert('Please describe your research problem first.');
 
@@ -334,7 +307,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
 
       // Export JSON
-      document.getElementById('btn-export-json').addEventListener('click', () => {
+      document.getElementById('btn-export-json')?.addEventListener('click', () => {
         if (!this.currentResults.length) return;
         const blob = new Blob([JSON.stringify(this.currentResults, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -344,15 +317,75 @@ document.addEventListener('DOMContentLoaded', () => {
         a.click();
       });
 
-      // History Search, Score & Sort Inputs
-      const historySearch = document.getElementById('history-search');
-      const historyFilterScore = document.getElementById('history-filter-score');
-      const historySort = document.getElementById('history-sort');
-      if (historySearch) historySearch.addEventListener('input', () => { this.renderHistory(); this.renderHistoryPapersTable(); });
-      if (historyFilterScore) historyFilterScore.addEventListener('change', () => { this.renderHistory(); this.renderHistoryPapersTable(); });
-      if (historySort) historySort.addEventListener('change', () => this.renderHistoryPapersTable());
 
-      // Select All Checkbox
+
+      // History Filters & Bulk Action Event Handlers
+      const historySearch = document.getElementById('history-search');
+      const historyMinScore = document.getElementById('history-filter-min-score');
+      const historyMaxScore = document.getElementById('history-filter-max-score');
+      const historyFilterSource = document.getElementById('history-filter-source');
+      const historySort = document.getElementById('history-sort');
+
+      const triggerTableReRender = () => {
+        if (typeof this.renderHistoryPapersTable === 'function') {
+          this.renderHistoryPapersTable();
+        }
+        if (typeof this.renderHistory === 'function') {
+          this.renderHistory();
+        }
+      };
+
+      const updateDualSliderHighlight = () => {
+        const minInput = document.getElementById('history-filter-min-score');
+        const maxInput = document.getElementById('history-filter-max-score');
+        const highlight = document.getElementById('dual-range-highlight');
+        if (minInput && maxInput && highlight) {
+          const minVal = parseInt(minInput.value);
+          const maxVal = parseInt(maxInput.value);
+          const leftPercent = ((minVal - 1) / 9) * 100;
+          const rightPercent = 100 - (((maxVal - 1) / 9) * 100);
+          highlight.style.left = `${leftPercent}%`;
+          highlight.style.right = `${rightPercent}%`;
+        }
+      };
+
+      const handleScoreSliderChange = (e) => {
+        const minInput = document.getElementById('history-filter-min-score');
+        const maxInput = document.getElementById('history-filter-max-score');
+        if (minInput && maxInput) {
+          let minVal = parseInt(minInput.value);
+          let maxVal = parseInt(maxInput.value);
+          if (minVal > maxVal) {
+            if (e.target?.id === 'history-filter-min-score') {
+              maxInput.value = minVal;
+              const valMax = document.getElementById('val-history-filter-max-score');
+              if (valMax) valMax.textContent = minVal;
+            } else {
+              minInput.value = maxVal;
+              const valMin = document.getElementById('val-history-filter-min-score');
+              if (valMin) valMin.textContent = maxVal;
+            }
+          }
+        }
+        updateDualSliderHighlight();
+        triggerTableReRender();
+      };
+
+      updateDualSliderHighlight();
+
+      if (historySearch) historySearch.addEventListener('input', triggerTableReRender);
+      if (historyMinScore) {
+        historyMinScore.addEventListener('input', handleScoreSliderChange);
+        historyMinScore.addEventListener('change', handleScoreSliderChange);
+      }
+      if (historyMaxScore) {
+        historyMaxScore.addEventListener('input', handleScoreSliderChange);
+        historyMaxScore.addEventListener('change', handleScoreSliderChange);
+      }
+      if (historyFilterSource) historyFilterSource.addEventListener('change', triggerTableReRender);
+      if (historySort) historySort.addEventListener('change', triggerTableReRender);
+
+      // Select All Checkbox (Papers Table)
       const chkSelectAll = document.getElementById('chk-select-all-papers');
       if (chkSelectAll) {
         chkSelectAll.addEventListener('change', (e) => {
@@ -374,64 +407,154 @@ document.addEventListener('DOMContentLoaded', () => {
         btnDeleteSelected.addEventListener('click', () => this.deleteSelectedPapers());
       }
 
+      // Select All Runs Checkbox (Evaluation Runs Subtab)
+      const chkSelectAllRuns = document.getElementById('chk-select-all-runs');
+      if (chkSelectAllRuns) {
+        chkSelectAllRuns.addEventListener('change', (e) => {
+          const isChecked = e.target.checked;
+          const checkboxes = document.querySelectorAll('.chk-eval-run-item');
+          checkboxes.forEach(cb => {
+            cb.checked = isChecked;
+            const eid = parseInt(cb.getAttribute('data-id'));
+            if (isChecked) this.selectedEvalIds.add(eid);
+            else this.selectedEvalIds.delete(eid);
+          });
+          this.updateBulkActionButtonsForRuns();
+        });
+      }
+
+      // Bulk Delete Runs Button (Evaluation Runs Subtab)
+      const btnDeleteSelectedRuns = document.getElementById('btn-delete-selected-runs');
+      if (btnDeleteSelectedRuns) {
+        btnDeleteSelectedRuns.addEventListener('click', () => this.deleteSelectedEvaluationRuns());
+      }
+
       // View Selected Details Button
       const btnViewSelected = document.getElementById('btn-view-selected-papers');
       if (btnViewSelected) {
         btnViewSelected.addEventListener('click', () => {
           const ids = Array.from(this.selectedPaperIds);
           if (ids.length === 0) return alert('Select at least one paper to view details.');
-          this.openPaperDetailModal(ids);
+          this.renderHistorySelectedPane(ids);
         });
       }
 
-      const btnSyncSch = document.getElementById('btn-sync-sch-from-sidebar');
-      if (btnSyncSch) {
-        btnSyncSch.addEventListener('click', () => this.autoFillScheduleForm(true));
+      // Pane Close Button
+      const btnClosePane = document.getElementById('btn-close-history-pane');
+      if (btnClosePane) {
+        btnClosePane.addEventListener('click', () => {
+          document.getElementById('history-selected-pane')?.classList.add('hidden');
+          document.getElementById('history-table-container')?.classList.remove('hidden');
+          document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
+          document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
+        });
       }
 
-      // Create Schedule Form (1:1 with New Evaluation)
-      document.getElementById('form-schedule').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const paperSource = document.getElementById('sch-source').value;
-        const isAcl = paperSource === 'acl';
-        const fetchMode = document.querySelector('input[name="sch-fetchmode"]:checked').value;
-
-        const sideProblem = document.getElementById('problem-statement')?.value.trim() || '';
-        let problemText = document.getElementById('sch-problem').value.trim();
-        if (!problemText) {
-          problemText = sideProblem || "Evaluate latest CS.CL & ACL 2026 papers matching high relevance criteria.";
-        }
-        let label = document.getElementById('sch-label').value.trim();
-        if (!label) {
-          label = `Daily Evaluation: ${problemText.substring(0, 30)}`;
-        }
-
-        const payload = {
-          label: label,
-          problem_text: problemText,
-          model_name: document.getElementById('sch-model').value,
-          paper_source: paperSource,
-          acl_track: document.getElementById('sch-acl-track').value,
-          fetch_mode: fetchMode,
-          max_papers: isAcl ? null : (fetchMode === 'count' ? parseInt(document.getElementById('sch-papers').value) : null),
-          days_back: isAcl ? null : (fetchMode === 'days' ? parseInt(document.getElementById('sch-days-back').value) : null),
-          keyword_filter: document.getElementById('sch-keyword').value.trim(),
-          min_score: parseInt(document.getElementById('sch-min-score').value),
-          max_concurrent: parseInt(document.getElementById('sch-max-concurrent').value),
-          run_time: document.getElementById('sch-time').value || "08:00",
-        };
-        await fetch('/api/schedules', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
+      // Pane Navigation Buttons
+      const btnPanePrev = document.getElementById('btn-pane-prev-paper');
+      if (btnPanePrev) {
+        btnPanePrev.addEventListener('click', () => {
+          if (!this.currentPanePaperIds || !this.currentPanePaperIds.length) return;
+          const currentId = this.currentPanePaperIds[0];
+          const idx = this.allPapers.findIndex(p => p.id === currentId);
+          if (idx > 0) {
+            this.renderHistorySelectedPane([this.allPapers[idx - 1].id]);
+          }
         });
-        alert('Created recurring schedule with full evaluation configuration!');
-        document.getElementById('form-schedule').reset();
-        this.loadSchedules();
-      });
+      }
+
+      const btnPaneNext = document.getElementById('btn-pane-next-paper');
+      if (btnPaneNext) {
+        btnPaneNext.addEventListener('click', () => {
+          if (!this.currentPanePaperIds || !this.currentPanePaperIds.length) return;
+          const currentId = this.currentPanePaperIds[0];
+          const idx = this.allPapers.findIndex(p => p.id === currentId);
+          if (idx >= 0 && idx < this.allPapers.length - 1) {
+            this.renderHistorySelectedPane([this.allPapers[idx + 1].id]);
+          }
+        });
+      }
+
+      // Pane Delete Button
+      const btnDeletePane = document.getElementById('btn-delete-pane-papers');
+      if (btnDeletePane) {
+        btnDeletePane.addEventListener('click', async () => {
+          if (this.currentPanePaperIds && this.currentPanePaperIds.length === 1) {
+            if (confirm('Delete this paper from the database?')) {
+              const targetId = this.currentPanePaperIds[0];
+              await fetch('/api/papers', {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ paper_ids: [targetId] }),
+              });
+              const idx = this.allPapers.findIndex(p => p.id === targetId);
+              await this.loadHistory();
+              if (this.allPapers.length > 0 && idx !== -1) {
+                const nextIdx = Math.min(idx, this.allPapers.length - 1);
+                this.renderHistorySelectedPane([this.allPapers[nextIdx].id]);
+              } else {
+                document.getElementById('history-selected-pane')?.classList.add('hidden');
+                document.getElementById('history-table-container')?.classList.remove('hidden');
+                document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
+                document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
+              }
+            }
+          } else {
+            await this.deleteSelectedPapers();
+            document.getElementById('history-selected-pane')?.classList.add('hidden');
+            document.getElementById('history-table-container')?.classList.remove('hidden');
+            document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
+            document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
+          }
+        });
+      }
+
+      // Modal Paper Navigation & Action Buttons
+      const btnPrevModal = document.getElementById('btn-prev-paper-modal');
+      if (btnPrevModal) {
+        btnPrevModal.addEventListener('click', () => {
+          const idx = this.allPapers.findIndex(p => p.id === this.currentPaperModalId);
+          if (idx > 0) {
+            this.openPaperDetailModal(this.allPapers[idx - 1].id);
+          }
+        });
+      }
+
+      const btnNextModal = document.getElementById('btn-next-paper-modal');
+      if (btnNextModal) {
+        btnNextModal.addEventListener('click', () => {
+          const idx = this.allPapers.findIndex(p => p.id === this.currentPaperModalId);
+          if (idx >= 0 && idx < this.allPapers.length - 1) {
+            this.openPaperDetailModal(this.allPapers[idx + 1].id);
+          }
+        });
+      }
+
+      const btnDeleteModal = document.getElementById('btn-delete-paper-modal');
+      if (btnDeleteModal) {
+        btnDeleteModal.addEventListener('click', async () => {
+          if (!this.currentPaperModalId) return;
+          if (confirm('Delete this paper from the database?')) {
+            const targetId = this.currentPaperModalId;
+            await fetch('/api/papers', {
+              method: 'DELETE',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ paper_ids: [targetId] }),
+            });
+            const idx = this.allPapers.findIndex(p => p.id === targetId);
+            await this.loadHistory();
+            if (this.allPapers.length > 0 && idx !== -1) {
+              const nextIdx = Math.min(idx, this.allPapers.length - 1);
+              this.openPaperDetailModal(this.allPapers[nextIdx].id);
+            } else {
+              document.getElementById('modal-paper-detail')?.classList.add('hidden');
+            }
+          }
+        });
+      }
 
       // Edit Schedule Modal Form (1:1 with New Evaluation)
-      document.getElementById('form-edit-schedule').addEventListener('submit', async (e) => {
+      document.getElementById('form-edit-schedule')?.addEventListener('submit', async (e) => {
         e.preventDefault();
         const id = document.getElementById('edit-sch-id').value;
         const paperSource = document.getElementById('edit-sch-source').value;
@@ -460,9 +583,45 @@ document.addEventListener('DOMContentLoaded', () => {
         this.loadSchedules();
       });
 
-      document.getElementById('btn-cancel-edit').addEventListener('click', () => {
+      document.getElementById('btn-cancel-edit')?.addEventListener('click', () => {
         document.getElementById('modal-edit-schedule').classList.add('hidden');
       });
+    },
+
+    autoFillScheduleForm(force = false) {
+      const schProblem = document.getElementById('sch-problem');
+      const schLabel = document.getElementById('sch-label');
+      const sideProblem = document.getElementById('problem-statement')?.value.trim() || '';
+      const sideModel = document.getElementById('model-name')?.value;
+      const sideSource = document.getElementById('paper-source')?.value;
+      const sideAclTrack = document.getElementById('acl-track')?.value;
+      const sideKeyword = document.getElementById('keyword-filter')?.value;
+
+      if (schProblem && (force || !schProblem.value.trim())) {
+        schProblem.value = sideProblem || "Evaluate latest CS.CL & ACL 2026 papers matching high relevance criteria.";
+      }
+
+      if (schLabel && (force || !schLabel.value.trim())) {
+        const titleExcerpt = sideProblem ? sideProblem.substring(0, 30) : "Daily Paper Matcher";
+        schLabel.value = `Daily Evaluation: ${titleExcerpt}`;
+      }
+
+      if (sideModel && document.getElementById('sch-model')) {
+        document.getElementById('sch-model').value = sideModel;
+      }
+
+      if (sideSource && document.getElementById('sch-source')) {
+        document.getElementById('sch-source').value = sideSource;
+        document.getElementById('sch-source').dispatchEvent(new Event('change'));
+      }
+
+      if (sideAclTrack && document.getElementById('sch-acl-track')) {
+        document.getElementById('sch-acl-track').value = sideAclTrack;
+      }
+
+      if (sideKeyword && document.getElementById('sch-keyword')) {
+        document.getElementById('sch-keyword').value = sideKeyword;
+      }
     },
 
     bindPaperModal() {
@@ -485,8 +644,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
       const aclTrack = document.getElementById('acl-track')?.value || 'all';
 
-      const fetchMode = document.querySelector('input[name="fetchmode"]:checked').value;
-      const maxPapers = fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null;
+      const fetchMode = document.querySelector('input[name="fetchmode"]:checked')?.value || 'count';
+      const maxPapers = paperSource === 'acl' ? null : (fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null);
       const daysBack = fetchMode === 'days' ? parseInt(document.getElementById('days-back').value) : null;
       const keyword = document.getElementById('keyword-filter').value.trim();
       const concurrent = parseInt(document.getElementById('max-concurrent').value);
@@ -603,8 +762,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
       const aclTrack = document.getElementById('acl-track')?.value || 'all';
 
-      const fetchMode = document.querySelector('input[name="fetchmode"]:checked').value;
-      const maxPapers = fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null;
+      const fetchMode = document.querySelector('input[name="fetchmode"]:checked')?.value || 'count';
+      const maxPapers = paperSource === 'acl' ? null : (fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null);
       const daysBack = fetchMode === 'days' ? parseInt(document.getElementById('days-back').value) : null;
       const keyword = document.getElementById('keyword-filter').value.trim();
       const concurrent = parseInt(document.getElementById('max-concurrent').value);
@@ -901,6 +1060,41 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (e) { console.error('History error:', e); }
     },
 
+    createPaperRow(p) {
+      const row = document.createElement('tr');
+      row.style.borderBottom = '1px solid var(--color-divider)';
+
+      const score = Number(p.avg_score || 0);
+      const scoreClass = score >= 7 ? 'high' : score >= 4 ? 'mid' : 'low';
+      const isChecked = this.selectedPaperIds.has(p.id);
+
+      const title = p.title || 'Untitled';
+      const authors = p.authors || 'Unknown';
+      const problem = p.problem_text || '';
+      const dateText = p.eval_date ? String(p.eval_date).split('T')[0] : '';
+
+      row.innerHTML = `
+        <td style="padding:10px">
+          <input type="checkbox" class="chk-paper-item" data-id="${p.id}" ${isChecked ? 'checked' : ''} />
+        </td>
+        <td style="padding:10px">
+          <div style="font-weight:700">${title}</div>
+          <div style="font-size:12px;opacity:.65">${authors}</div>
+        </td>
+        <td style="padding:10px">
+          <span class="score-badge ${scoreClass}" style="font-size:12px;padding:2px 8px">${score}/10</span>
+        </td>
+        <td style="padding:10px;max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${problem.replace(/"/g, '&quot;')}">${problem}</td>
+        <td style="padding:10px">${dateText}</td>
+        <td style="padding:10px;display:flex;gap:6px;flex-wrap:wrap">
+          <button class="btn btn-secondary btn-view-paper" data-id="${p.id}" style="font-size:12px;padding:4px 8px">View</button>
+          <button class="btn btn-secondary btn-del-paper" data-id="${p.id}" style="font-size:12px;padding:4px 8px;color:var(--color-accent)">Delete</button>
+        </td>
+      `;
+
+      return row;
+    },
+
     renderHistoryPapersTable() {
       const tbody = document.getElementById('table-history-papers-body');
       if (!tbody) return;
@@ -908,7 +1102,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
       const sourceFilter = document.getElementById('history-filter-source')?.value || 'all';
-      const scoreFilter = document.getElementById('history-filter-score')?.value || 'all';
+      const minScoreFilter = parseInt(document.getElementById('history-filter-min-score')?.value || '1');
+      const maxScoreFilter = parseInt(document.getElementById('history-filter-max-score')?.value || '10');
       const sortVal = document.getElementById('history-sort')?.value || 'score-desc';
 
       let list = [...this.allPapers];
@@ -928,19 +1123,19 @@ document.addEventListener('DOMContentLoaded', () => {
         list = list.filter(p => !(p.categories || '').includes('ACL'));
       }
 
-      if (scoreFilter === 'high') {
-        list = list.filter(p => (p.avg_score || 0) >= 7);
-      } else if (scoreFilter === 'mid') {
-        list = list.filter(p => (p.avg_score || 0) >= 4 && (p.avg_score || 0) < 7);
-      } else if (scoreFilter === 'low') {
-        list = list.filter(p => (p.avg_score || 0) < 4);
+      if (minScoreFilter > 1 || maxScoreFilter < 10) {
+        list = list.filter(p => (p.avg_score || 0) >= minScoreFilter && (p.avg_score || 0) <= maxScoreFilter);
       }
 
       // Sorting
       if (sortVal === 'score-desc') {
-        list.sort((a, b) => b.avg_score - a.avg_score);
+        list.sort((a, b) => (b.avg_score || 0) - (a.avg_score || 0));
       } else if (sortVal === 'score-asc') {
-        list.sort((a, b) => a.avg_score - b.avg_score);
+        list.sort((a, b) => (a.avg_score || 0) - (b.avg_score || 0));
+      } else if (sortVal === 'problem-asc') {
+        list.sort((a, b) => (a.problem_text || '').localeCompare(b.problem_text || ''));
+      } else if (sortVal === 'source-asc') {
+        list.sort((a, b) => (a.categories || '').localeCompare(b.categories || ''));
       } else if (sortVal === 'date-desc') {
         list.sort((a, b) => new Date(b.eval_date || 0) - new Date(a.eval_date || 0));
       } else if (sortVal === 'title-asc') {
@@ -952,57 +1147,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
-      list.forEach(p => {
-        const tr = document.createElement('tr');
-        tr.style.borderBottom = '1px solid var(--color-divider)';
-
-        const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
-        const isChecked = this.selectedPaperIds.has(p.id);
-
-        const chipsHtml = (p.judge_scores || []).map(j => {
-          const cls = j.score >= 7 ? 'high' : j.score >= 4 ? 'mid' : 'low';
-          return `<span class="judge-chip ${cls}" style="font-size:10px;padding:1px 3px">J${j.run}:${j.score}</span>`;
-        }).join(' ');
-
-        // Truncate problem text if long
-        const problemExcerpt = (p.problem_text || '').length > 110
-          ? `${p.problem_text.substring(0, 110)}...`
-          : p.problem_text;
-
-        const isAclPaper = (p.categories || '').includes('ACL');
-        const sourceBadge = isAclPaper
-          ? '<span class="score-badge mid" style="font-size:10px;padding:1px 4px;margin-right:4px">ACL 2026</span>'
-          : '<span class="score-badge high" style="font-size:10px;padding:1px 4px;margin-right:4px">arXiv</span>';
-
-        tr.innerHTML = `
-          <td style="padding:10px;text-align:center">
-            <input type="checkbox" class="chk-paper-item" data-id="${p.id}" ${isChecked ? 'checked' : ''} />
-          </td>
-          <td style="padding:10px">
-            <div style="font-weight:800;font-size:14px">${sourceBadge} ${p.title}</div>
-            <div style="font-size:11.5px;opacity:.6;margin-top:2px">👤 ${p.authors || 'Unknown'}</div>
-            <a href="${p.url}" target="_blank" style="font-size:11.5px;color:var(--color-accent);text-decoration:none;margin-top:2px;display:inline-block">Open Paper &rarr;</a>
-          </td>
-          <td style="padding:10px">
-            <span class="score-badge ${scoreClass}" style="font-size:13px;padding:2px 8px">${p.avg_score}/10</span>
-            <div style="display:flex;gap:3px;flex-wrap:wrap;margin-top:4px">${chipsHtml}</div>
-          </td>
-          <td style="padding:10px">
-            <div style="font-size:12.5px;line-height:1.4" title="${p.problem_text}">🎯 ${problemExcerpt}</div>
-          </td>
-          <td style="padding:10px;font-size:12px;opacity:.7">
-            <div>📅 ${(p.eval_date || '').split('T')[0] || (p.eval_date || '').split(' ')[0]}</div>
-            <div style="font-size:11px;opacity:.8">${p.model_name || ''}</div>
-          </td>
-          <td style="padding:10px">
-            <div style="display:flex;gap:4px">
-              <button class="btn btn-secondary btn-view-paper" data-id="${p.id}" style="padding:3px 8px;font-size:12px">👁️ View</button>
-              <button class="btn btn-secondary btn-del-paper" data-id="${p.id}" style="padding:3px 8px;font-size:12px;color:var(--color-accent)">🗑️</button>
-            </div>
-          </td>
-        `;
-        tbody.appendChild(tr);
-      });
+      list.forEach(p => tbody.appendChild(this.createPaperRow(p)));
 
       // Bind row checkboxes
       tbody.querySelectorAll('.chk-paper-item').forEach(cb => {
@@ -1044,40 +1189,37 @@ document.addEventListener('DOMContentLoaded', () => {
       const btnDel = document.getElementById('btn-delete-selected-papers');
       const btnView = document.getElementById('btn-view-selected-papers');
       const chkSelectAll = document.getElementById('chk-select-all-papers');
+      const totalCheckboxes = document.querySelectorAll('.chk-paper-item').length;
 
-      const btnViewSelected = document.getElementById('btn-view-selected-papers');
-      if (btnViewSelected) {
-        btnViewSelected.addEventListener('click', () => {
-          const ids = Array.from(this.selectedPaperIds);
-          if (!ids.length) return alert('Select at least one paper from the list.');
-          this.renderHistorySelectedPane(ids);
+      if (countEl) countEl.textContent = `Selected (${count})`;
+      if (btnDel) btnDel.disabled = (count === 0);
+      if (btnView) btnView.disabled = (count === 0);
+      if (chkSelectAll) chkSelectAll.checked = (totalCheckboxes > 0 && count === totalCheckboxes);
+    },
+
+    updateBulkActionButtonsForRuns() {
+      const count = this.selectedEvalIds.size;
+      const countEl = document.getElementById('selected-runs-count');
+      const btnDel = document.getElementById('btn-delete-selected-runs');
+      const chkSelectAll = document.getElementById('chk-select-all-runs');
+      const totalCheckboxes = document.querySelectorAll('.chk-eval-run-item').length;
+
+      if (countEl) countEl.textContent = `Selected (${count})`;
+      if (btnDel) btnDel.disabled = (count === 0);
+      if (chkSelectAll) chkSelectAll.checked = (totalCheckboxes > 0 && count === totalCheckboxes);
+    },
+
+    async deleteSelectedEvaluationRuns() {
+      const ids = Array.from(this.selectedEvalIds);
+      if (!ids.length) return;
+      if (confirm(`Delete ${ids.length} selected evaluation run(s) and all associated papers?`)) {
+        await fetch('/api/evaluations/delete-bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ eval_ids: ids }),
         });
-      }
-
-      ['history-search', 'history-filter-score', 'history-filter-source', 'history-sort'].forEach(id => {
-        const el = document.getElementById(id);
-        if (el) el.addEventListener('input', () => this.renderPaperCentricTable());
-      });
-
-      const btnClosePane = document.getElementById('btn-close-history-pane');
-      if (btnClosePane) {
-        btnClosePane.addEventListener('click', () => {
-          document.getElementById('history-selected-pane')?.classList.add('hidden');
-          document.getElementById('history-table-container')?.classList.remove('hidden');
-          document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
-          document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
-        });
-      }
-
-      const btnDeletePane = document.getElementById('btn-delete-pane-papers');
-      if (btnDeletePane) {
-        btnDeletePane.addEventListener('click', async () => {
-          await this.deleteSelectedPapers();
-          document.getElementById('history-selected-pane')?.classList.add('hidden');
-          document.getElementById('history-table-container')?.classList.remove('hidden');
-          document.getElementById('history-filter-toolbar')?.classList.remove('hidden');
-          document.getElementById('history-bulk-toolbar')?.classList.remove('hidden');
-        });
+        this.selectedEvalIds.clear();
+        this.loadHistory();
       }
     },
 
@@ -1105,6 +1247,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const ids = Array.isArray(paperIds) ? paperIds : [paperIds];
       if (!ids.length) return;
+      this.currentPanePaperIds = ids;
+
+      const primaryId = ids[0];
+      const currentIndex = this.allPapers.findIndex(p => p.id === primaryId);
+      const btnPanePrev = document.getElementById('btn-pane-prev-paper');
+      const btnPaneNext = document.getElementById('btn-pane-next-paper');
+      if (btnPanePrev) btnPanePrev.disabled = (currentIndex <= 0 || currentIndex === -1);
+      if (btnPaneNext) btnPaneNext.disabled = (currentIndex >= this.allPapers.length - 1 || currentIndex === -1);
 
       if (tableContainer) tableContainer.classList.add('hidden');
       if (toolbarFilter) toolbarFilter.classList.add('hidden');
@@ -1222,7 +1372,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (err) {
         contentEl.innerHTML = `<p style="color:var(--color-accent)">Failed to load paper details: ${err.message}</p>`;
       }
-    }
+    },
 
     async openPaperDetailModal(paperIds) {
       const modal = document.getElementById('modal-paper-detail');
@@ -1232,9 +1382,21 @@ document.addEventListener('DOMContentLoaded', () => {
       const ids = Array.isArray(paperIds) ? paperIds : [paperIds];
       if (!ids.length) return;
 
+      const primaryId = ids[0];
+      this.currentPaperModalId = primaryId;
+
       modal.classList.remove('hidden');
       titleEl.textContent = ids.length === 1 ? 'Paper Details' : `Selected Papers Details (${ids.length} Papers)`;
       contentEl.innerHTML = '<p style="opacity:.6">Loading paper details, 5-judge panel verdicts and debate transcripts...</p>';
+
+      const currentIndex = this.allPapers.findIndex(p => p.id === primaryId);
+      const btnPrev = document.getElementById('btn-prev-paper-modal');
+      const btnNext = document.getElementById('btn-next-paper-modal');
+      const btnDel = document.getElementById('btn-delete-paper-modal');
+
+      if (btnPrev) btnPrev.disabled = (currentIndex <= 0 || currentIndex === -1);
+      if (btnNext) btnNext.disabled = (currentIndex >= this.allPapers.length - 1 || currentIndex === -1);
+      if (btnDel) btnDel.disabled = (!this.currentPaperModalId);
 
       try {
         const papers = await Promise.all(ids.map(id => fetch(`/api/papers/${id}`).then(r => {
@@ -1338,7 +1500,8 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
-      const scoreFilter = document.getElementById('history-filter-score')?.value || 'all';
+      const minScoreFilter = parseInt(document.getElementById('history-filter-min-score')?.value || '1');
+      const maxScoreFilter = parseInt(document.getElementById('history-filter-max-score')?.value || '10');
 
       let list = [...this.pastEvaluations];
 
@@ -1350,12 +1513,14 @@ document.addEventListener('DOMContentLoaded', () => {
         );
       }
 
-      if (scoreFilter === 'high') {
-        list = list.filter(ev => (ev.overall_avg || 0) >= 7);
-      } else if (scoreFilter === 'mid') {
-        list = list.filter(ev => (ev.overall_avg || 0) >= 4 && (ev.overall_avg || 0) < 7);
-      } else if (scoreFilter === 'low') {
-        list = list.filter(ev => (ev.overall_avg || 0) < 4);
+      if (minScoreFilter > 1 || maxScoreFilter < 10) {
+        list = list.filter(ev => {
+          // Keep in-progress/failed runs visible even when score filtering is active.
+          const status = String(ev.status || 'COMPLETED').toUpperCase();
+          if (status !== 'COMPLETED') return true;
+          const avg = Number(ev.overall_avg || 0);
+          return avg >= minScoreFilter && avg <= maxScoreFilter;
+        });
       }
 
       if (!list.length) {
@@ -1366,6 +1531,7 @@ document.addEventListener('DOMContentLoaded', () => {
       list.forEach(ev => {
         const isRunning = ev.status === 'RUNNING';
         const isFailed = ev.status === 'FAILED';
+        const isChecked = this.selectedEvalIds.has(ev.id);
         const statusBadge = isRunning
           ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">🔄 RUNNING (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
           : isFailed
@@ -1378,6 +1544,7 @@ document.addEventListener('DOMContentLoaded', () => {
         card.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:center">
             <div style="display:flex;align-items:center;gap:10px">
+              <input type="checkbox" class="chk-eval-run-item" data-id="${ev.id}" ${isChecked ? 'checked' : ''} style="cursor:pointer;transform:scale(1.15)" />
               <div style="font-weight:800;font-size:15px">Eval #${ev.id} — Overall: ${ev.overall_avg || 0}/10</div>
               ${statusBadge}
             </div>
@@ -1396,11 +1563,23 @@ document.addEventListener('DOMContentLoaded', () => {
         container.appendChild(card);
       });
 
+      // Bind evaluation run checkboxes
+      container.querySelectorAll('.chk-eval-run-item').forEach(cb => {
+        cb.addEventListener('change', (e) => {
+          const eid = parseInt(e.target.getAttribute('data-id'));
+          if (e.target.checked) this.selectedEvalIds.add(eid);
+          else this.selectedEvalIds.delete(eid);
+          this.updateBulkActionButtonsForRuns();
+        });
+      });
+      this.updateBulkActionButtonsForRuns();
+
       // Bind delete buttons
       container.querySelectorAll('.btn-del-eval').forEach(b => b.addEventListener('click', async e => {
-        const id = e.target.getAttribute('data-id');
+        const id = parseInt(e.target.getAttribute('data-id'));
         if (confirm(`Delete evaluation run #${id}?`)) {
           await fetch(`/api/evaluations/${id}`, { method: 'DELETE' });
+          this.selectedEvalIds.delete(id);
           this.loadHistory();
         }
       }));
