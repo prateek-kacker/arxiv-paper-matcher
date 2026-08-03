@@ -33,9 +33,20 @@ from core_engine import (
 )
 
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+
 def log(msg: str):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {msg}", flush=True)
+    try:
+        print(f"[{timestamp}] {msg}", flush=True)
+    except UnicodeEncodeError:
+        safe_msg = msg.encode("ascii", errors="replace").decode("ascii")
+        print(f"[{timestamp}] {safe_msg}", flush=True)
 
 
 def main():
@@ -51,6 +62,17 @@ def main():
 
     # 1. Resolve API Key
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
+        try:
+            from google.cloud import secretmanager
+            proj = os.environ.get("GCP_PROJECT_ID", "gen-lang-client-0096294200")
+            client = secretmanager.SecretManagerServiceClient()
+            secret_name = f"projects/{proj}/secrets/GEMINI_API_KEY/versions/latest"
+            api_key = client.access_secret_version(request={"name": secret_name}).payload.data.decode("UTF-8").strip()
+            log("🔑 Successfully loaded GEMINI_API_KEY from Google Cloud Secret Manager")
+        except Exception as se:
+            log(f"⚠️ Could not load secret GEMINI_API_KEY: {se}")
+
     if not api_key:
         log("❌ ERROR: GEMINI_API_KEY environment variable is not set!")
         sys.exit(1)

@@ -696,7 +696,7 @@ def _parse_judge_json(raw: str) -> dict:
 class DebateEngine:
     """Runs a multi-agent debate (Advocate vs Skeptic -> 5-Judge Panel) using Gemini."""
 
-    def __init__(self, client: genai.Client, model_name: str = "gemini-3-pro-preview"):
+    def __init__(self, client: genai.Client, model_name: str = "gemini-2.5-flash"):
         self.client = client
         self.model_name = model_name
         self.debate_rounds = 2
@@ -1105,7 +1105,7 @@ def _render_debate_detail(r: DebateResult):
             st.markdown(f"**Skeptic** (Round {i})")
             st.write(rnd.skeptic_argument)
 
-    st.markdown("### 🏛️ Judge Panel (5 independent verdicts)")
+    st.markdown("### 🏛️ Judge Panel (A5 independent verdicts)")
     for jv in r.judge_verdicts:
         icon = "🟢" if jv.relevance_score >= 7 else "🟡" if jv.relevance_score >= 4 else "🔴"
         with st.chat_message("user", avatar="⚖️"):
@@ -1618,7 +1618,7 @@ def main():
             "gemini-2.5-pro",
             "gemini-2.5-flash",
             "gemini-2.0-flash",
-        ], index=0)
+        ], index=3)
         fetch_mode = st.radio("Fetch mode", ["By number of papers", "By last N days"],
                               horizontal=True)
         if fetch_mode == "By number of papers":
@@ -2117,7 +2117,7 @@ def main():
                     "gemini-2.5-flash",
                     "gemini-2.0-flash",
                 ],
-                index=0,
+                index=3,
                 key="rec_model_name",
             )
             rec_fetch_mode = st.radio(
@@ -2259,7 +2259,7 @@ def main():
                                 "gemini-2.5-flash",
                                 "gemini-2.0-flash",
                             ]
-                            cur_model_idx = models_list.index(sch.get("model_name")) if sch.get("model_name") in models_list else 0
+                            cur_model_idx = models_list.index(sch.get("model_name")) if sch.get("model_name") in models_list else 3
                             edit_model = st.selectbox("Gemini model", models_list, index=cur_model_idx, key=f"edit_model_{sch['id']}")
 
                             mode_idx = 0 if sch.get("fetch_mode") == "count" else 1

@@ -34,6 +34,7 @@ DB_GCS_BLOB = os.environ.get("PAPER_MATCHER_DB_BLOB", "paper_matcher.db").strip(
 AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "").strip()
 AWS_S3_KEY = os.environ.get("AWS_S3_KEY", "paper_matcher.db").strip() or "paper_matcher.db"
 PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "240"))
+SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "30000"))
 _DB_SYNC_LOCK = threading.Lock()
 
 
@@ -47,9 +48,17 @@ def _db_sidecar_paths() -> list[Path]:
 
 def _checkpoint_db():
     """Flush WAL pages into the main DB file before uploading."""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-    conn.execute("PRAGMA wal_checkpoint(FULL)")
-    conn.close()
+    conn = sqlite3.connect(
+        str(DB_PATH),
+        check_same_thread=False,
+        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+    )
+    try:
+        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        # PASSIVE reduces lock contention during frequent web requests.
+        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+    finally:
+        conn.close()
 
 
 def sync_db_from_cloud() -> tuple[bool, str]:
@@ -95,7 +104,11 @@ def sync_db_to_cloud() -> tuple[bool, str]:
 
     results = []
     with _DB_SYNC_LOCK:
-        _checkpoint_db()
+        try:
+            _checkpoint_db()
+        except Exception as e:
+            # Never fail API writes due to sync checkpoint contention.
+            results.append(f"checkpoint error: {e}")
         if DB_GCS_BUCKET:
             try:
                 client = storage.Client()
@@ -120,8 +133,13 @@ def sync_db_to_cloud() -> tuple[bool, str]:
 
 def get_db() -> sqlite3.Connection:
     """Return a SQLite connection with WAL mode."""
-    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+    conn = sqlite3.connect(
+        str(DB_PATH),
+        check_same_thread=False,
+        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+    )
     conn.row_factory = sqlite3.Row
+    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
@@ -358,13 +376,21 @@ def load_evaluation_papers(eval_id: int) -> list[dict]:
 
 
 def delete_evaluation(eval_id: int, sync_cloud: bool = True):
+    delete_evaluations([eval_id], sync_cloud=sync_cloud)
+
+
+def delete_evaluations(eval_ids: list[int], sync_cloud: bool = True):
+    if not eval_ids:
+        return
     conn = get_db()
-    paper_ids = [r['id'] for r in conn.execute("SELECT id FROM papers WHERE evaluation_id = ?", (eval_id,)).fetchall()]
-    for pid in paper_ids:
-        conn.execute("DELETE FROM judge_verdicts WHERE paper_id = ?", (pid,))
-        conn.execute("DELETE FROM debate_rounds WHERE paper_id = ?", (pid,))
-    conn.execute("DELETE FROM papers WHERE evaluation_id = ?", (eval_id,))
-    conn.execute("DELETE FROM evaluations WHERE id = ?", (eval_id,))
+    placeholders = ",".join("?" for _ in eval_ids)
+    paper_ids = [r['id'] for r in conn.execute(f"SELECT id FROM papers WHERE evaluation_id IN ({placeholders})", eval_ids).fetchall()]
+    if paper_ids:
+        p_placeholders = ",".join("?" for _ in paper_ids)
+        conn.execute(f"DELETE FROM judge_verdicts WHERE paper_id IN ({p_placeholders})", paper_ids)
+        conn.execute(f"DELETE FROM debate_rounds WHERE paper_id IN ({p_placeholders})", paper_ids)
+        conn.execute(f"DELETE FROM papers WHERE id IN ({p_placeholders})", paper_ids)
+    conn.execute(f"DELETE FROM evaluations WHERE id IN ({placeholders})", eval_ids)
     conn.commit()
     conn.close()
     if sync_cloud:
@@ -658,27 +684,37 @@ def fetch_arxiv_papers(
     )
 
     papers: list[Paper] = []
-    for result in client.results(search):
-        pub_date = result.published.replace(tzinfo=None)
-        if use_date_filter and pub_date < cutoff_date:
+    max_retries = 4
+    for attempt in range(max_retries):
+        try:
+            papers = []
+            for result in client.results(search):
+                pub_date = result.published.replace(tzinfo=None)
+                if use_date_filter and pub_date < cutoff_date:
+                    break
+                papers.append(
+                    Paper(
+                        title=result.title,
+                        authors=", ".join(a.name for a in result.authors[:5]) + ("..." if len(result.authors) > 5 else ""),
+                        abstract=result.summary.replace("\n", " "),
+                        url=result.entry_id,
+                        published=result.published.strftime("%Y-%m-%d"),
+                        categories=", ".join(result.categories),
+                    )
+                )
+                if not use_date_filter and len(papers) >= fetch_limit:
+                    break
             break
-        papers.append(
-            Paper(
-                title=result.title,
-                authors=", ".join(a.name for a in result.authors[:5]) + ("..." if len(result.authors) > 5 else ""),
-                abstract=result.summary.replace("\n", " "),
-                url=result.entry_id,
-                published=result.published.strftime("%Y-%m-%d"),
-                categories=", ".join(result.categories),
-            )
-        )
-        if not use_date_filter and len(papers) >= fetch_limit:
-            break
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            import time
+            time.sleep(3 * (attempt + 1))
     return papers
 
 
 def fetch_acl_papers(
-    max_results: Optional[int] = 50,
+    max_results: Optional[int] = None,
     search_query: Optional[str] = None,
     volume_filter: str = "all",
 ) -> list[Paper]:
@@ -788,7 +824,7 @@ def _parse_judge_json(raw: str) -> dict:
 
 
 class DebateEngine:
-    def __init__(self, client: genai.Client, model_name: str = "gemini-3-pro-preview"):
+    def __init__(self, client: genai.Client, model_name: str = "gemini-2.5-flash"):
         self.client = client
         self.model_name = model_name
         self.debate_rounds = 2
@@ -971,7 +1007,8 @@ def _run_evaluation_headless(
     _cb("fetching", 0, 0)
     try:
         if paper_source == "acl":
-            papers = fetch_acl_papers(max_results=max_papers, search_query=keyword_filter, volume_filter=acl_track)
+            # ACL headless runs are intentionally uncapped.
+            papers = fetch_acl_papers(max_results=None, search_query=keyword_filter, volume_filter=acl_track)
         else:
             papers = fetch_arxiv_papers(max_results=max_papers, search_query=keyword_filter, days_back=days_back)
     except Exception as e:

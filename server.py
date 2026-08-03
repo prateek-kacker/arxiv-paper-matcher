@@ -33,6 +33,7 @@ from core_engine import (
     load_evaluation_papers,
     load_all_papers,
     delete_evaluation,
+    delete_evaluations,
     delete_papers,
     create_recurring_schedule,
     update_recurring_schedule,
@@ -54,6 +55,7 @@ from core_engine import (
 )
 
 app = FastAPI(title="arXiv CS.CL Paper Matcher", version="2.0.0")
+FETCH_TIMEOUT_SECONDS = int(os.environ.get("PAPER_FETCH_TIMEOUT_SECONDS", "45"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -117,20 +119,43 @@ async def trigger_cloud_sync():
 
 @app.post("/api/fetch-papers")
 async def api_fetch_papers(req: dict):
+    paper_source = req.get("paper_source", "arxiv")
+    acl_track = req.get("acl_track", "all")
     search_query = req.get("keyword_filter") or None
     days_back = req.get("days_back")
-    max_results = req.get("max_papers") or 50
+    max_results = req.get("max_papers")
     if days_back is not None:
         days_back = int(days_back)
     if max_results is not None:
         max_results = int(max_results)
+    if paper_source != "acl" and max_results is None:
+        max_results = 50
 
     try:
-        papers = fetch_arxiv_papers(
-            max_results=max_results,
-            search_query=search_query,
-            days_back=days_back,
-        )
+        if paper_source == "acl":
+            # ACL fetches are intentionally uncapped; ignore any client max_papers value.
+            papers = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_acl_papers,
+                    max_results=None,
+                    search_query=search_query,
+                    volume_filter=acl_track,
+                ),
+                timeout=FETCH_TIMEOUT_SECONDS,
+            )
+        else:
+            papers = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_arxiv_papers,
+                    max_results=max_results,
+                    search_query=search_query,
+                    days_back=days_back,
+                ),
+                timeout=FETCH_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail=f"Timed out fetching {paper_source.upper()} papers after {FETCH_TIMEOUT_SECONDS}s") from e
+    try:
         paper_dicts = []
         urls = [p.url for p in papers]
         past_matches = find_matching_past_papers(urls)
@@ -150,7 +175,7 @@ async def api_fetch_papers(req: dict):
             })
         return {"success": True, "count": len(paper_dicts), "papers": paper_dicts}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/api/evaluate/stream")
@@ -158,7 +183,7 @@ async def api_evaluate_stream(request: Request):
     data = await request.json()
     api_key = os.environ.get("GEMINI_API_KEY", "").strip() or data.get("api_key", "").strip()
     problem_statement = data.get("problem_statement", "").strip()
-    model_name = data.get("model_name", "gemini-3-pro-preview")
+    model_name = data.get("model_name", "gemini-2.5-flash")
     max_papers = data.get("max_papers")
     days_back = data.get("days_back")
     keyword_filter = data.get("keyword_filter", "").strip()
@@ -166,6 +191,8 @@ async def api_evaluate_stream(request: Request):
 
     paper_source = data.get("paper_source", "arxiv")
     acl_track = data.get("acl_track", "all")
+    if paper_source == "acl":
+        max_papers = None
 
     if not api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
@@ -180,23 +207,35 @@ async def api_evaluate_stream(request: Request):
                     "event": "stage",
                     "data": json.dumps({"stage": "fetching", "message": f"Fetching papers from ACL 2026 Anthology ({track_label} Track)..."})
                 }
-                papers = await asyncio.to_thread(
-                    fetch_acl_papers,
-                    max_results=max_papers,
-                    search_query=keyword_filter,
-                    volume_filter=acl_track,
+                papers = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fetch_acl_papers,
+                        max_results=None,
+                        search_query=keyword_filter,
+                        volume_filter=acl_track,
+                    ),
+                    timeout=FETCH_TIMEOUT_SECONDS,
                 )
             else:
                 yield {
                     "event": "stage",
                     "data": json.dumps({"stage": "fetching", "message": "Fetching papers from arXiv CS.CL..."})
                 }
-                papers = await asyncio.to_thread(
-                    fetch_arxiv_papers,
-                    max_results=max_papers,
-                    search_query=keyword_filter,
-                    days_back=days_back,
+                papers = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fetch_arxiv_papers,
+                        max_results=max_papers,
+                        search_query=keyword_filter,
+                        days_back=days_back,
+                    ),
+                    timeout=FETCH_TIMEOUT_SECONDS,
                 )
+        except asyncio.TimeoutError:
+            yield {
+                "event": "error",
+                "data": json.dumps({"error": f"Timed out fetching papers after {FETCH_TIMEOUT_SECONDS}s"})
+            }
+            return
         except Exception as e:
             yield {
                 "event": "error",
@@ -302,13 +341,17 @@ async def api_evaluate_stream(request: Request):
 async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks):
     api_key = os.environ.get("GEMINI_API_KEY", "").strip() or data.get("api_key", "").strip()
     problem_statement = data.get("problem_statement", "").strip()
-    model_name = data.get("model_name", "gemini-3-pro-preview")
-    max_papers = data.get("max_papers") or 10
-    days_back = data.get("days_back")
-    keyword_filter = data.get("keyword_filter", "").strip()
-    max_concurrent = int(data.get("max_concurrent", 3))
+    model_name = data.get("model_name", "gemini-2.5-flash")
     paper_source = data.get("paper_source", "arxiv")
     acl_track = data.get("acl_track", "all")
+    max_papers = data.get("max_papers")
+    days_back = data.get("days_back")
+    if paper_source == "acl":
+        max_papers = None
+    if max_papers is None and days_back is None and paper_source != "acl":
+        max_papers = 10
+    keyword_filter = data.get("keyword_filter", "").strip()
+    max_concurrent = int(data.get("max_concurrent", 3))
 
     if not api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
@@ -318,17 +361,36 @@ async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks)
     # Fetch papers
     try:
         if paper_source == "acl":
-            papers = await asyncio.to_thread(fetch_acl_papers, max_results=max_papers, search_query=keyword_filter, volume_filter=acl_track)
+            papers = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_acl_papers,
+                    max_results=None,
+                    search_query=keyword_filter,
+                    volume_filter=acl_track,
+                ),
+                timeout=FETCH_TIMEOUT_SECONDS,
+            )
         else:
-            papers = await asyncio.to_thread(fetch_arxiv_papers, max_results=max_papers, search_query=keyword_filter, days_back=days_back)
+            papers = await asyncio.wait_for(
+                asyncio.to_thread(
+                    fetch_arxiv_papers,
+                    max_results=max_papers,
+                    search_query=keyword_filter,
+                    days_back=days_back,
+                ),
+                timeout=FETCH_TIMEOUT_SECONDS,
+            )
+    except asyncio.TimeoutError as e:
+        raise HTTPException(status_code=504, detail=f"Timed out fetching papers after {FETCH_TIMEOUT_SECONDS}s") from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch papers: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to fetch papers: {e}") from e
 
     if not papers:
         raise HTTPException(status_code=400, detail=f"No {paper_source.upper()} papers found matching filters.")
 
     # Create background evaluation record in SQLite
-    eval_id = save_evaluation(problem=problem_statement, model=model_name, status="RUNNING", total=len(papers))
+    # Avoid blocking request completion on cloud upload here.
+    eval_id = save_evaluation(problem=problem_statement, model=model_name, status="RUNNING", total=len(papers), sync_cloud=False)
 
     # Add async background worker
     background_tasks.add_task(
@@ -350,11 +412,11 @@ async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks)
 
 
 async def run_background_eval_task(eval_id: int, api_key: str, problem: str, model: str, papers: list, max_concurrent: int):
+    completed_count = 0
     try:
         from google import genai
         c = genai.Client(api_key=api_key)
         engine = DebateEngine(client=c, model_name=model)
-        completed_count = 0
 
         sem = asyncio.Semaphore(max_concurrent)
 
@@ -362,7 +424,7 @@ async def run_background_eval_task(eval_id: int, api_key: str, problem: str, mod
             nonlocal completed_count
             async with sem:
                 try:
-                    result = await engine.evaluate_paper_async(paper, problem)
+                    result = await engine.run_debate(paper, problem)
                     p_id = save_paper(eval_id, result.paper, result.avg_score, sync_cloud=False)
                     for r_idx, r in enumerate(result.rounds, start=1):
                         save_debate_round(p_id, r_idx, r.advocate_argument, r.skeptic_argument, sync_cloud=False)
@@ -395,14 +457,15 @@ async def get_schedules():
 
 @app.post("/api/schedules")
 async def add_schedule(req: dict):
+    is_acl = req.get("paper_source", "arxiv") == "acl"
     schedule_id = create_recurring_schedule(
         label=req.get("label", "").strip() or "Daily Schedule",
         problem_text=req["problem_text"].strip(),
-        model_name=req.get("model_name", "gemini-3-pro-preview"),
+        model_name=req.get("model_name", "gemini-2.5-flash"),
         paper_source=req.get("paper_source", "arxiv"),
         acl_track=req.get("acl_track", "all"),
         fetch_mode=req.get("fetch_mode", "count"),
-        max_papers=req.get("max_papers"),
+        max_papers=None if is_acl else req.get("max_papers"),
         days_back=req.get("days_back"),
         keyword_filter=req.get("keyword_filter", "").strip(),
         min_score=int(req.get("min_score", 6)),
@@ -414,15 +477,16 @@ async def add_schedule(req: dict):
 
 @app.put("/api/schedules/{schedule_id}")
 async def edit_schedule(schedule_id: int, req: dict):
+    is_acl = req.get("paper_source", "arxiv") == "acl"
     update_recurring_schedule(
         schedule_id=schedule_id,
         label=req.get("label", "").strip() or f"Schedule #{schedule_id}",
         problem_text=req["problem_text"].strip(),
-        model_name=req.get("model_name", "gemini-3-pro-preview"),
+        model_name=req.get("model_name", "gemini-2.5-flash"),
         paper_source=req.get("paper_source", "arxiv"),
         acl_track=req.get("acl_track", "all"),
         fetch_mode=req.get("fetch_mode", "count"),
-        max_papers=req.get("max_papers"),
+        max_papers=None if is_acl else req.get("max_papers"),
         days_back=req.get("days_back"),
         keyword_filter=req.get("keyword_filter", "").strip(),
         min_score=int(req.get("min_score", 6)),
@@ -494,13 +558,21 @@ async def get_evaluation_detail(eval_id: int):
 
 @app.delete("/api/evaluations/{eval_id}")
 async def remove_evaluation(eval_id: int):
-    delete_evaluation(eval_id)
+    delete_evaluation(int(eval_id))
     return {"success": True}
+
+
+@app.post("/api/evaluations/delete-bulk")
+async def remove_evaluations_bulk(req: dict):
+    eval_ids = [int(i) for i in req.get("eval_ids", []) if str(i).isdigit()]
+    if eval_ids:
+        delete_evaluations(eval_ids)
+    return {"success": True, "deleted_count": len(eval_ids)}
 
 
 @app.delete("/api/papers")
 async def remove_papers(req: dict):
-    paper_ids = req.get("paper_ids", [])
+    paper_ids = [int(i) for i in req.get("paper_ids", []) if str(i).isdigit()]
     if paper_ids:
         delete_papers(paper_ids)
     return {"success": True, "deleted_count": len(paper_ids)}

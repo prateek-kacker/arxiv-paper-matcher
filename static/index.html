@@ -63,10 +63,10 @@
         <div class="field">
           <label>Gemini Model</label>
           <select id="model-name" class="input">
-            <option value="gemini-3-pro-preview" selected>gemini-3-pro-preview</option>
+            <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
             <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
             <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-            <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+            <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
             <option value="gemini-2.0-flash">gemini-2.0-flash</option>
           </select>
         </div>
@@ -314,10 +314,10 @@
                   <div class="field">
                     <label>Gemini Model</label>
                     <select id="sch-model" class="input">
-                      <option value="gemini-3-pro-preview" selected>gemini-3-pro-preview</option>
+                      <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
                       <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
                       <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-                      <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+                      <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
                       <option value="gemini-2.0-flash">gemini-2.0-flash</option>
                     </select>
                   </div>
@@ -406,36 +406,59 @@
         <section id="tab-history" class="tab-pane">
           <div style="display:flex;flex-direction:column;gap:20px">
             
-            <!-- History Sub-Tabs -->
-            <div class="subtabs-header">
-              <button class="subtab-btn active" data-subtab="history-subtab-table">📋 All Evaluated Papers Table</button>
-              <button class="subtab-btn" data-subtab="history-subtab-runs">📁 Evaluation Runs</button>
+            <!-- Filter & Search Toolbar (Shared across History Sub-Tabs) -->
+            <div id="history-filter-toolbar" class="card elev-sm" style="flex-direction:row;gap:12px;align-items:center;flex-wrap:wrap">
+              <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or research problem..." style="flex:1;min-width:240px" />
+              <select id="history-filter-source" class="input" style="width:160px">
+                <option value="all">All Sources</option>
+                <option value="arxiv">arXiv CS.CL</option>
+                <option value="acl">ACL 2026</option>
+              </select>
+              <div style="display:flex;align-items:center;gap:12px;background:var(--color-surface);padding:6px 14px;border-radius:6px;border:1px solid var(--color-divider)">
+                <span style="font-size:12px;font-weight:700;white-space:nowrap">Score Range: <strong id="val-history-filter-min-score" style="color:var(--color-accent)">1</strong> – <strong id="val-history-filter-max-score" style="color:var(--color-accent)">10</strong></span>
+                <div class="dual-range-slider">
+                  <div class="dual-range-track"></div>
+                  <div id="dual-range-highlight" class="dual-range-highlight"></div>
+                  <input type="range" id="history-filter-min-score" min="1" max="10" step="1" value="1" />
+                  <input type="range" id="history-filter-max-score" min="1" max="10" step="1" value="10" />
+                </div>
+              </div>
+              <select id="history-sort" class="input" style="width:210px">
+                <option value="score-desc">Sort: Score (High &rarr; Low)</option>
+                <option value="score-asc">Sort: Score (Low &rarr; High)</option>
+                <option value="problem-asc">Sort: Research Question</option>
+                <option value="source-asc">Sort: Paper Source</option>
+                <option value="date-desc">Sort: Date (Newest First)</option>
+                <option value="title-asc">Sort: Title (A &rarr; Z)</option>
+              </select>
             </div>
 
-            <!-- SUBTAB 1: PAPER-CENTRIC TABLE -->
-            <div id="history-subtab-table" class="subtab-pane active" style="display:flex;flex-direction:column;gap:16px">
+            <!-- History Sub-Tabs -->
+            <div class="subtabs-header">
+              <button class="subtab-btn active" data-subtab="history-subtab-runs">📁 Evaluation Runs</button>
+              <button class="subtab-btn" data-subtab="history-subtab-table">📋 All Evaluated Papers Index</button>
+            </div>
+
+            <!-- SUBTAB 1: EVALUATION RUNS (DEFAULT VIEW) -->
+            <div id="history-subtab-runs" class="subtab-pane active">
               
-              <!-- Filter & Search Toolbar -->
-              <div id="history-filter-toolbar" class="card elev-sm" style="flex-direction:row;gap:12px;align-items:center;flex-wrap:wrap">
-                <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or research problem..." style="flex:1;min-width:240px" />
-                <select id="history-filter-source" class="input" style="width:160px">
-                  <option value="all">All Sources</option>
-                  <option value="arxiv">arXiv CS.CL</option>
-                  <option value="acl">ACL 2026</option>
-                </select>
-                <select id="history-filter-score" class="input" style="width:160px">
-                  <option value="all">All relevance scores</option>
-                  <option value="high">🟢 High (7-10)</option>
-                  <option value="mid">🟡 Moderate (4-6)</option>
-                  <option value="low">🔴 Low (1-3)</option>
-                </select>
-                <select id="history-sort" class="input" style="width:160px">
-                  <option value="score-desc">Score: High &rarr; Low</option>
-                  <option value="score-asc">Score: Low &rarr; High</option>
-                  <option value="date-desc">Date: Newest First</option>
-                  <option value="title-asc">Title: A &rarr; Z</option>
-                </select>
+              <!-- Bulk Actions Toolbar for Evaluation Runs -->
+              <div id="history-runs-bulk-toolbar" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">
+                <div style="display:flex;align-items:center;gap:12px">
+                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:800;cursor:pointer">
+                    <input type="checkbox" id="chk-select-all-runs" />
+                    Select All Runs
+                  </label>
+                  <span id="selected-runs-count" style="font-size:13px;opacity:.7">Selected (0)</span>
+                </div>
+                <button id="btn-delete-selected-runs" class="btn btn-secondary" style="color:var(--color-accent)" disabled>🗑️ Delete Selected Runs</button>
               </div>
+
+              <div id="history-list" style="display:flex;flex-direction:column;gap:14px"></div>
+            </div>
+
+            <!-- SUBTAB 2: PAPER-CENTRIC SEARCH INDEX -->
+            <div id="history-subtab-table" class="subtab-pane">
 
               <!-- Bulk Actions Toolbar -->
               <div id="history-bulk-toolbar" style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--color-surface);border:1px solid var(--color-divider)">
@@ -479,17 +502,14 @@
                     <span style="font-size:12.5px;opacity:.7">Full debate transcripts, 5-judge panel verdicts &amp; relevance scores</span>
                   </div>
                   <div style="display:flex;gap:8px">
-                    <button type="button" id="btn-close-history-pane" class="btn btn-secondary">← Back to Papers List</button>
-                    <button type="button" id="btn-delete-pane-papers" class="btn btn-secondary" style="color:var(--color-accent)">🗑️ Delete Selected</button>
+                    <button type="button" id="btn-pane-prev-paper" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">⬅️ Previous Paper</button>
+                    <button type="button" id="btn-pane-next-paper" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">Next Paper ➡️</button>
+                    <button type="button" id="btn-delete-pane-papers" class="btn btn-secondary" style="color:var(--color-accent);padding:4px 10px;font-size:12px">🗑️ Delete Paper</button>
+                    <button type="button" id="btn-close-history-pane" class="btn btn-secondary" style="padding:4px 10px;font-size:12px">← Back to List</button>
                   </div>
                 </div>
                 <div id="history-pane-content" style="display:flex;flex-direction:column;gap:20px"></div>
               </div>
-            </div>
-
-            <!-- SUBTAB 2: EVALUATION RUNS -->
-            <div id="history-subtab-runs" class="subtab-pane">
-              <div id="history-list" style="display:flex;flex-direction:column;gap:12px"></div>
             </div>
 
           </div>
@@ -522,7 +542,7 @@
               <option value="gemini-3-pro-preview">gemini-3-pro-preview</option>
               <option value="gemini-3-flash-preview">gemini-3-flash-preview</option>
               <option value="gemini-2.5-pro">gemini-2.5-pro</option>
-              <option value="gemini-2.5-flash">gemini-2.5-flash</option>
+              <option value="gemini-2.5-flash" selected>gemini-2.5-flash</option>
               <option value="gemini-2.0-flash">gemini-2.0-flash</option>
             </select>
           </div>
@@ -606,17 +626,22 @@
 
   <!-- VIEW PAPER DETAILS MODAL -->
   <div id="modal-paper-detail" class="modal-backdrop hidden">
-    <div class="modal-dialog" style="max-width:800px;max-height:85vh;overflow-y:auto">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <h3 id="modal-paper-title" style="margin:0">Paper Details</h3>
-        <button type="button" id="btn-close-paper-modal" class="btn btn-secondary" style="padding:4px 10px">✕</button>
+    <div class="modal-dialog" style="max-width:850px;max-height:90vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--color-divider);padding-bottom:10px;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <h3 id="modal-paper-title" style="margin:0;font-size:16px;flex:1">Paper Details</h3>
+        <div style="display:flex;align-items:center;gap:6px">
+          <button type="button" id="btn-prev-paper-modal" class="btn btn-secondary" style="padding:4px 10px;font-size:12px" disabled>⬅️ Previous</button>
+          <button type="button" id="btn-next-paper-modal" class="btn btn-secondary" style="padding:4px 10px;font-size:12px" disabled>Next ➡️</button>
+          <button type="button" id="btn-delete-paper-modal" class="btn btn-secondary" style="padding:4px 10px;font-size:12px;color:var(--color-accent)">🗑️ Delete Paper</button>
+          <button type="button" id="btn-close-paper-modal" class="btn btn-secondary" style="padding:4px 10px">✕</button>
+        </div>
       </div>
-      <div id="modal-paper-content" style="display:flex;flex-direction:column;gap:16px;margin-top:12px">
+      <div id="modal-paper-content" style="display:flex;flex-direction:column;gap:16px">
         <p style="opacity:.6">Loading paper details...</p>
       </div>
     </div>
   </div>
 
-  <script src="/static/app.js?v=2.0.0"></script>
+  <script src="/static/app.js?v=2.1.0"></script>
 </body>
 </html>

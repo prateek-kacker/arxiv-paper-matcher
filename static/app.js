@@ -22,6 +22,47 @@ document.addEventListener('DOMContentLoaded', () => {
       this.loadHistory();
     },
 
+    async fetchJsonWithTimeout(url, timeoutMs = 15000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const res = await fetch(url, { signal: controller.signal });
+        if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        return await res.json();
+      } catch (err) {
+        if (err && err.name === 'AbortError') {
+          throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+
+    async fetchPaperDetails(ids) {
+      const settled = await Promise.allSettled(
+        ids.map(id => this.fetchJsonWithTimeout(`/api/papers/${id}`, 15000))
+      );
+
+      const papers = [];
+      const errors = [];
+      settled.forEach((result, idx) => {
+        const id = ids[idx];
+        if (result.status === 'fulfilled') {
+          papers.push(result.value);
+        } else {
+          const msg = result.reason && result.reason.message ? result.reason.message : String(result.reason);
+          errors.push(`Paper #${id}: ${msg}`);
+        }
+      });
+
+      if (!papers.length) {
+        throw new Error(errors[0] || 'No paper details could be loaded.');
+      }
+
+      return { papers, errors };
+    },
+
     // ── Navigation ──
     bindTabNavigation() {
       // Main Page Tabs
@@ -193,6 +234,18 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('progress-card')?.classList.add('hidden');
       });
 
+      document.getElementById('btn-fetch-only')?.addEventListener('click', () => {
+        this.fetchPapersOnly();
+      });
+
+      document.getElementById('btn-post-webhook')?.addEventListener('click', () => {
+        if (!this.currentResults.length) {
+          alert('No in-memory results available. Run an evaluation first, then use this button.');
+          return;
+        }
+        alert('Webhook posting is handled automatically on completed evaluations when auto-post is enabled.');
+      });
+
       // Range Value Badge Syncing for Create Schedule
       const syncSchRange = (id, targetId) => {
         const input = document.getElementById(id);
@@ -304,6 +357,53 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('sch-val-concurrent').textContent = concurrent;
 
         document.getElementById('sch-label').focus();
+      });
+
+      document.getElementById('btn-sync-sch-from-sidebar')?.addEventListener('click', () => {
+        this.autoFillScheduleForm(true);
+      });
+
+      document.getElementById('form-schedule')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const paperSource = document.getElementById('sch-source').value;
+        const isAcl = paperSource === 'acl';
+        const fetchMode = document.querySelector('input[name="sch-fetchmode"]:checked')?.value || 'count';
+
+        const payload = {
+          label: document.getElementById('sch-label').value.trim(),
+          problem_text: document.getElementById('sch-problem').value.trim(),
+          model_name: document.getElementById('sch-model').value,
+          paper_source: paperSource,
+          acl_track: document.getElementById('sch-acl-track').value,
+          fetch_mode: fetchMode,
+          max_papers: isAcl ? null : (fetchMode === 'count' ? parseInt(document.getElementById('sch-papers').value) : null),
+          days_back: isAcl ? null : (fetchMode === 'days' ? parseInt(document.getElementById('sch-days-back').value) : null),
+          keyword_filter: document.getElementById('sch-keyword').value.trim(),
+          min_score: parseInt(document.getElementById('sch-min-score').value),
+          max_concurrent: parseInt(document.getElementById('sch-max-concurrent').value),
+          run_time: document.getElementById('sch-time').value,
+        };
+
+        if (!payload.problem_text) {
+          alert('Please provide a research problem description for this schedule.');
+          return;
+        }
+
+        try {
+          const res = await fetch('/api/schedules', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success) {
+            throw new Error(data.detail || data.error || 'Failed to create schedule');
+          }
+          await this.loadSchedules();
+          alert(`Schedule created (#${data.schedule_id}).`);
+        } catch (err) {
+          alert(`Failed to create schedule: ${err.message}`);
+        }
       });
 
       // Export JSON
@@ -556,31 +656,39 @@ document.addEventListener('DOMContentLoaded', () => {
       // Edit Schedule Modal Form (1:1 with New Evaluation)
       document.getElementById('form-edit-schedule')?.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const id = document.getElementById('edit-sch-id').value;
-        const paperSource = document.getElementById('edit-sch-source').value;
-        const isAcl = paperSource === 'acl';
-        const fetchMode = document.querySelector('input[name="edit-sch-fetchmode"]:checked').value;
-        const payload = {
-          label: document.getElementById('edit-sch-label').value.trim(),
-          problem_text: document.getElementById('edit-sch-problem').value.trim(),
-          model_name: document.getElementById('edit-sch-model').value,
-          paper_source: paperSource,
-          acl_track: document.getElementById('edit-sch-acl-track').value,
-          fetch_mode: fetchMode,
-          max_papers: isAcl ? null : (fetchMode === 'count' ? parseInt(document.getElementById('edit-sch-papers').value) : null),
-          days_back: isAcl ? null : (fetchMode === 'days' ? parseInt(document.getElementById('edit-sch-days-back').value) : null),
-          keyword_filter: document.getElementById('edit-sch-keyword').value.trim(),
-          min_score: parseInt(document.getElementById('edit-sch-min-score').value),
-          max_concurrent: parseInt(document.getElementById('edit-sch-max-concurrent').value),
-          run_time: document.getElementById('edit-sch-time').value,
-        };
-        await fetch(`/api/schedules/${id}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-        document.getElementById('modal-edit-schedule').classList.add('hidden');
-        this.loadSchedules();
+        try {
+          const id = document.getElementById('edit-sch-id').value;
+          const paperSource = document.getElementById('edit-sch-source').value;
+          const isAcl = paperSource === 'acl';
+          const fetchMode = document.querySelector('input[name="edit-sch-fetchmode"]:checked').value;
+          const payload = {
+            label: document.getElementById('edit-sch-label').value.trim(),
+            problem_text: document.getElementById('edit-sch-problem').value.trim(),
+            model_name: document.getElementById('edit-sch-model').value,
+            paper_source: paperSource,
+            acl_track: document.getElementById('edit-sch-acl-track').value,
+            fetch_mode: fetchMode,
+            max_papers: isAcl ? null : (fetchMode === 'count' ? parseInt(document.getElementById('edit-sch-papers').value) : null),
+            days_back: isAcl ? null : (fetchMode === 'days' ? parseInt(document.getElementById('edit-sch-days-back').value) : null),
+            keyword_filter: document.getElementById('edit-sch-keyword').value.trim(),
+            min_score: parseInt(document.getElementById('edit-sch-min-score').value),
+            max_concurrent: parseInt(document.getElementById('edit-sch-max-concurrent').value),
+            run_time: document.getElementById('edit-sch-time').value,
+          };
+          const res = await fetch(`/api/schedules/${id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success) {
+            throw new Error(data.detail || data.error || 'Failed to update schedule');
+          }
+          document.getElementById('modal-edit-schedule').classList.add('hidden');
+          this.loadSchedules();
+        } catch (err) {
+          alert(`Failed to update schedule: ${err.message}`);
+        }
       });
 
       document.getElementById('btn-cancel-edit')?.addEventListener('click', () => {
@@ -799,6 +907,37 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     },
 
+    async fetchPapersOnly() {
+      const paperSource = document.getElementById('paper-source')?.value || 'arxiv';
+      const aclTrack = document.getElementById('acl-track')?.value || 'all';
+      const fetchMode = document.querySelector('input[name="fetchmode"]:checked')?.value || 'count';
+      const maxPapers = paperSource === 'acl' ? null : (fetchMode === 'count' ? parseInt(document.getElementById('max-papers').value) : null);
+      const daysBack = fetchMode === 'days' ? parseInt(document.getElementById('days-back').value) : null;
+      const keyword = document.getElementById('keyword-filter').value.trim();
+
+      try {
+        const response = await fetch('/api/fetch-papers', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            paper_source: paperSource,
+            acl_track: aclTrack,
+            max_papers: maxPapers,
+            days_back: daysBack,
+            keyword_filter: keyword,
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.success) {
+          throw new Error(data.detail || data.error || 'Failed to fetch papers');
+        }
+
+        alert(`Fetched ${data.count || 0} papers from ${paperSource.toUpperCase()}.`);
+      } catch (err) {
+        alert(`Fetch failed: ${err.message}`);
+      }
+    },
+
     // ── Results Dashboard ──
     renderResultsDashboard() {
       const results = this.currentResults;
@@ -972,28 +1111,56 @@ document.addEventListener('DOMContentLoaded', () => {
         container.appendChild(card);
       });
 
-      container.querySelectorAll('.btn-run-sch').forEach(b => b.addEventListener('click', e => {
+      container.querySelectorAll('.btn-run-sch').forEach(b => b.addEventListener('click', async e => {
         const id = e.target.getAttribute('data-id');
-        fetch(`/api/schedules/${id}/run`, { method: 'POST' });
-        alert(`Triggered background run for schedule #${id}!`);
+        try {
+          const res = await fetch(`/api/schedules/${id}/run`, { method: 'POST' });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success) {
+            throw new Error(data.detail || data.error || 'Failed to trigger schedule run');
+          }
+          alert(`Triggered background run for schedule #${id}.`);
+          this.loadSchedules();
+        } catch (err) {
+          alert(`Failed to trigger schedule #${id}: ${err.message}`);
+        }
       }));
 
       container.querySelectorAll('.btn-toggle-sch').forEach(b => b.addEventListener('click', async e => {
         const id = e.target.getAttribute('data-id');
-        const active = e.target.getAttribute('data-active') === '1';
-        await fetch(`/api/schedules/${id}/toggle`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ active: !active }),
-        });
-        this.loadSchedules();
+        const activeRaw = String(e.target.getAttribute('data-active') || '').toLowerCase();
+        const active = activeRaw === '1' || activeRaw === 'true';
+        const nextActive = !active;
+
+        try {
+          const res = await fetch(`/api/schedules/${id}/toggle`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ active: nextActive }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.success) {
+            throw new Error(data.detail || data.error || 'Failed to update schedule');
+          }
+          await this.loadSchedules();
+        } catch (err) {
+          alert(`Failed to update schedule #${id}: ${err.message}`);
+        }
       }));
 
       container.querySelectorAll('.btn-del-sch').forEach(b => b.addEventListener('click', async e => {
         const id = e.target.getAttribute('data-id');
         if (confirm('Delete schedule?')) {
-          await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
-          this.loadSchedules();
+          try {
+            const res = await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.success) {
+              throw new Error(data.detail || data.error || 'Failed to delete schedule');
+            }
+            await this.loadSchedules();
+          } catch (err) {
+            alert(`Failed to delete schedule #${id}: ${err.message}`);
+          }
         }
       }));
 
@@ -1265,12 +1432,17 @@ document.addEventListener('DOMContentLoaded', () => {
       contentEl.innerHTML = '<p style="opacity:.6">Loading paper details, 5-judge panel verdicts and debate transcripts...</p>';
 
       try {
-        const papers = await Promise.all(ids.map(id => fetch(`/api/papers/${id}`).then(r => {
-          if (!r.ok) throw new Error(`Paper #${id} fetch failed`);
-          return r.json();
-        })));
+        const { papers, errors } = await this.fetchPaperDetails(ids);
 
         let html = '';
+        if (errors.length) {
+          html += `
+            <div class="card" style="border-left:4px solid var(--color-amber-500);margin-bottom:12px">
+              <div style="font-size:12.5px"><strong>Some papers could not be loaded.</strong></div>
+              <div style="font-size:12px;opacity:.8;margin-top:4px">${errors.join(' | ')}</div>
+            </div>
+          `;
+        }
         papers.forEach(p => {
           const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
           const chipsHtml = (p.verdicts || []).map(j => {
@@ -1399,16 +1571,21 @@ document.addEventListener('DOMContentLoaded', () => {
       if (btnDel) btnDel.disabled = (!this.currentPaperModalId);
 
       try {
-        const papers = await Promise.all(ids.map(id => fetch(`/api/papers/${id}`).then(r => {
-          if (!r.ok) throw new Error(`Paper #${id} fetch failed`);
-          return r.json();
-        })));
+        const { papers, errors } = await this.fetchPaperDetails(ids);
 
         if (ids.length === 1 && papers[0].title) {
           titleEl.textContent = papers[0].title;
         }
 
         let fullContentHtml = '';
+        if (errors.length) {
+          fullContentHtml += `
+            <div class="card" style="border-left:4px solid var(--color-amber-500);margin-bottom:12px">
+              <div style="font-size:12.5px"><strong>Some papers could not be loaded.</strong></div>
+              <div style="font-size:12px;opacity:.8;margin-top:4px">${errors.join(' | ')}</div>
+            </div>
+          `;
+        }
 
         papers.forEach((p, idx) => {
           const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';

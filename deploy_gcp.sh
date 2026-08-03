@@ -84,6 +84,7 @@ if gcloud run jobs describe "${JOB_NAME}" --region="${REGION}" --project="${PROJ
         --command="python" \
         --args="batch_runner.py" \
         --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID}" \
+        --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
         --memory=2Gi \
         --cpu=2 \
         --task-timeout=30m \
@@ -95,6 +96,7 @@ else
         --command="python" \
         --args="batch_runner.py" \
         --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID}" \
+        --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
         --memory=2Gi \
         --cpu=2 \
         --task-timeout=30m \
