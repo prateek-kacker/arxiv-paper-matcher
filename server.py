@@ -8,13 +8,14 @@ Serves static frontend assets from static/ directory.
 import os
 import json
 import asyncio
-import threading
+import time
+from contextlib import asynccontextmanager
 from typing import Optional
 from pathlib import Path
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
@@ -22,13 +23,13 @@ from sse_starlette.sse import EventSourceResponse
 import core_engine as core
 from core_engine import (
     sync_db_from_cloud,
-    sync_db_to_cloud,
     init_db,
     save_evaluation,
     update_evaluation_progress,
     save_paper,
     save_debate_round,
     save_judge_verdict,
+    load_evaluation_paper_urls,
     load_past_evaluations,
     load_evaluation_papers,
     load_all_papers,
@@ -40,15 +41,12 @@ from core_engine import (
     load_recurring_schedules,
     set_recurring_schedule_active,
     delete_recurring_schedule,
-    load_due_recurring_schedules,
     update_schedule_last_run,
     find_matching_past_papers,
     fetch_arxiv_papers,
     fetch_acl_papers,
     DebateEngine,
-    Paper,
     DebateResult,
-    _post_results_to_webhook,
     _run_evaluation_headless,
     DB_GCS_BUCKET,
     AWS_S3_BUCKET,
@@ -58,8 +56,19 @@ from core_engine import (
     EVALRUN_S3_URI_PREFIX,
 )
 
-app = FastAPI(title="arXiv CS.CL Paper Matcher", version="2.0.0")
+# pylint: disable=unused-argument,redefined-outer-name
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Keep startup sync before serving requests.
+    sync_db_from_cloud()
+    init_db()
+    yield
+
+
+app = FastAPI(title="arXiv CS.CL Paper Matcher", version="2.0.0", lifespan=lifespan)
 FETCH_TIMEOUT_SECONDS = int(os.environ.get("PAPER_FETCH_TIMEOUT_SECONDS", "45"))
+CHECKPOINT_EVERY_N_PAPERS = int(os.environ.get("PAPER_CHECKPOINT_EVERY_N_PAPERS", "1"))
+CHECKPOINT_EVERY_SECONDS = int(os.environ.get("PAPER_CHECKPOINT_EVERY_SECONDS", "30"))
 
 app.add_middleware(
     CORSMiddleware,
@@ -68,13 +77,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize Database on startup
-@app.on_event("startup")
-def startup_event():
-    sync_db_from_cloud()
-    init_db()
-
 
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
@@ -189,7 +191,7 @@ async def api_fetch_papers(req: dict):
                 "past_records": past_records,
             })
         return {"success": True, "count": len(paper_dicts), "papers": paper_dicts}
-    except Exception as e:
+    except (TypeError, ValueError, KeyError, AttributeError) as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
@@ -202,8 +204,6 @@ async def api_evaluate_stream(request: Request):
     max_papers = data.get("max_papers")
     days_back = data.get("days_back")
     keyword_filter = data.get("keyword_filter", "").strip()
-    max_concurrent = int(data.get("max_concurrent", 3))
-
     paper_source = data.get("paper_source", "arxiv")
     acl_track = data.get("acl_track", "all")
     if paper_source == "acl":
@@ -251,7 +251,7 @@ async def api_evaluate_stream(request: Request):
                 "data": json.dumps({"error": f"Timed out fetching papers after {FETCH_TIMEOUT_SECONDS}s"})
             }
             return
-        except Exception as e:
+        except (TypeError, ValueError, RuntimeError, OSError) as e:
             yield {
                 "event": "error",
                 "data": json.dumps({"error": f"Failed to fetch papers from {paper_source.upper()}: {e}"})
@@ -270,15 +270,25 @@ async def api_evaluate_stream(request: Request):
             "data": json.dumps({"stage": "evaluating", "total_papers": len(papers), "message": f"Fetched {len(papers)} papers. Starting multi-agent debate..."})
         }
 
-        eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
+        eval_id = save_evaluation(
+            problem_statement,
+            model_name,
+            status="RUNNING",
+            total=len(papers),
+            sync_cloud=True,
+        )
         from google import genai
         c = genai.Client(api_key=api_key)
         eng = DebateEngine(client=c, model_name=model_name)
 
         results = []
+        disconnected = False
+        last_checkpoint_completed = 0
+        last_checkpoint_at = time.monotonic()
         for idx, paper in enumerate(papers, 1):
             if await request.is_disconnected():
                 print(f"[SSE] Client disconnected. Stopping evaluation loop at paper {idx}/{len(papers)} for eval_id={eval_id}", flush=True)
+                disconnected = True
                 break
 
             yield {
@@ -298,7 +308,7 @@ async def api_evaluate_stream(request: Request):
 
             try:
                 result = await eng.run_debate(paper, problem_statement, status_callback=_status_cb)
-            except Exception as exc:
+            except (RuntimeError, ValueError, OSError) as exc:
                 result = DebateResult(paper=paper, combined_verdict=f"Failed: {exc}", avg_score=0.0)
 
             results.append(result)
@@ -308,6 +318,30 @@ async def api_evaluate_stream(request: Request):
                 save_debate_round(paper_id, rnd_idx, rnd.advocate_argument, rnd.skeptic_argument, sync_cloud=False)
             for jv in result.judge_verdicts:
                 save_judge_verdict(paper_id, jv.run, jv.seed, jv.relevance_score, jv.verdict, jv.key_reasons, jv.suggested_use, sync_cloud=False)
+
+            update_evaluation_progress(
+                eval_id,
+                completed=len(results),
+                total=len(papers),
+                status="RUNNING",
+                sync_cloud=False,
+            )
+
+            now = time.monotonic()
+            count_delta = len(results) - last_checkpoint_completed
+            due_count = CHECKPOINT_EVERY_N_PAPERS > 0 and count_delta >= CHECKPOINT_EVERY_N_PAPERS
+            due_time = CHECKPOINT_EVERY_SECONDS > 0 and (now - last_checkpoint_at) >= CHECKPOINT_EVERY_SECONDS
+            if due_count or due_time:
+                update_evaluation_progress(
+                    eval_id,
+                    completed=len(results),
+                    total=len(papers),
+                    status="RUNNING",
+                    sync_cloud=True,
+                    emit_snapshot=True,
+                )
+                last_checkpoint_completed = len(results)
+                last_checkpoint_at = now
 
             yield {
                 "event": "paper_done",
@@ -338,14 +372,21 @@ async def api_evaluate_stream(request: Request):
                 })
             }
 
-        sync_db_to_cloud()
+        final_status = "COMPLETED" if not disconnected and len(results) == len(papers) else "FAILED"
+        update_evaluation_progress(
+            eval_id,
+            completed=len(results),
+            total=len(papers),
+            status=final_status,
+            sync_cloud=True,
+        )
 
         yield {
             "event": "eval_complete",
             "data": json.dumps({
                 "eval_id": eval_id,
                 "total_evaluated": len(results),
-                "message": "Evaluation completed and saved to database!",
+                "message": "Evaluation completed and saved to database!" if final_status == "COMPLETED" else "Evaluation ended early and partial results were saved.",
             })
         }
 
@@ -373,7 +414,74 @@ async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks)
     if not problem_statement:
         raise HTTPException(status_code=400, detail="Research problem description is required.")
 
-    # Fetch papers
+    # Create record immediately so request returns quickly and avoids gateway timeouts.
+    eval_id = save_evaluation(problem=problem_statement, model=model_name, status="RUNNING", total=0, sync_cloud=True)
+
+    # Add async background worker
+    background_tasks.add_task(
+        run_background_eval_task,
+        eval_id,
+        api_key,
+        problem_statement,
+        model_name,
+        paper_source,
+        acl_track,
+        max_papers,
+        days_back,
+        keyword_filter,
+        max_concurrent,
+    )
+
+    return {
+        "status": "success",
+        "eval_id": eval_id,
+        "total_papers": None,
+        "message": f"Background evaluation #{eval_id} queued. Paper fetch and evaluation are running asynchronously."
+    }
+
+
+async def run_background_eval_task(
+    eval_id: int,
+    api_key: str,
+    problem: str,
+    model: str,
+    paper_source: str,
+    acl_track: str,
+    max_papers: Optional[int],
+    days_back: Optional[int],
+    keyword_filter: str,
+    max_concurrent: int,
+):
+    completed_count = 0
+    last_checkpoint_completed = 0
+    last_checkpoint_at = time.monotonic()
+    checkpoint_lock = asyncio.Lock()
+
+    async def _maybe_checkpoint(total_papers: int, force: bool = False):
+        nonlocal last_checkpoint_completed, last_checkpoint_at
+        now = time.monotonic()
+        count_delta = completed_count - last_checkpoint_completed
+        due_count = CHECKPOINT_EVERY_N_PAPERS > 0 and count_delta >= CHECKPOINT_EVERY_N_PAPERS
+        due_time = CHECKPOINT_EVERY_SECONDS > 0 and (now - last_checkpoint_at) >= CHECKPOINT_EVERY_SECONDS
+        if not (force or due_count or due_time):
+            return
+        async with checkpoint_lock:
+            now_inner = time.monotonic()
+            count_delta_inner = completed_count - last_checkpoint_completed
+            due_count_inner = CHECKPOINT_EVERY_N_PAPERS > 0 and count_delta_inner >= CHECKPOINT_EVERY_N_PAPERS
+            due_time_inner = CHECKPOINT_EVERY_SECONDS > 0 and (now_inner - last_checkpoint_at) >= CHECKPOINT_EVERY_SECONDS
+            if not (force or due_count_inner or due_time_inner):
+                return
+            update_evaluation_progress(
+                eval_id,
+                completed=completed_count,
+                total=total_papers,
+                status="RUNNING",
+                sync_cloud=True,
+                emit_snapshot=True,
+            )
+            last_checkpoint_completed = completed_count
+            last_checkpoint_at = now_inner
     try:
         if paper_source == "acl":
             papers = await asyncio.wait_for(
@@ -395,40 +503,20 @@ async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks)
                 ),
                 timeout=FETCH_TIMEOUT_SECONDS,
             )
-    except asyncio.TimeoutError as e:
-        raise HTTPException(status_code=504, detail=f"Timed out fetching papers after {FETCH_TIMEOUT_SECONDS}s") from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch papers: {e}") from e
 
-    if not papers:
-        raise HTTPException(status_code=400, detail=f"No {paper_source.upper()} papers found matching filters.")
+        if not papers:
+            update_evaluation_progress(eval_id, completed=0, total=0, status="FAILED", sync_cloud=True)
+            return
 
-    # Create background evaluation record in SQLite
-    # Avoid blocking request completion on cloud upload here.
-    eval_id = save_evaluation(problem=problem_statement, model=model_name, status="RUNNING", total=len(papers), sync_cloud=False)
+        existing_urls = load_evaluation_paper_urls(eval_id)
+        seen_urls = set(existing_urls)
+        seen_urls_lock = asyncio.Lock()
+        papers_to_process = [p for p in papers if p.url not in existing_urls]
+        completed_count = len(existing_urls)
+        total_papers = len(papers)
 
-    # Add async background worker
-    background_tasks.add_task(
-        run_background_eval_task,
-        eval_id,
-        api_key,
-        problem_statement,
-        model_name,
-        papers,
-        max_concurrent,
-    )
+        update_evaluation_progress(eval_id, completed=completed_count, total=total_papers, status="RUNNING", sync_cloud=False)
 
-    return {
-        "status": "success",
-        "eval_id": eval_id,
-        "total_papers": len(papers),
-        "message": f"Background evaluation #{eval_id} started for {len(papers)} papers."
-    }
-
-
-async def run_background_eval_task(eval_id: int, api_key: str, problem: str, model: str, papers: list, max_concurrent: int):
-    completed_count = 0
-    try:
         from google import genai
         c = genai.Client(api_key=api_key)
         engine = DebateEngine(client=c, model_name=model)
@@ -440,23 +528,41 @@ async def run_background_eval_task(eval_id: int, api_key: str, problem: str, mod
             async with sem:
                 try:
                     result = await engine.run_debate(paper, problem)
-                    p_id = save_paper(eval_id, result.paper, result.avg_score, sync_cloud=False)
-                    for r_idx, r in enumerate(result.rounds, start=1):
-                        save_debate_round(p_id, r_idx, r.advocate_argument, r.skeptic_argument, sync_cloud=False)
-                    for v in result.judge_verdicts:
-                        save_judge_verdict(p_id, v.run, v.seed, v.relevance_score, v.verdict, v.key_reasons, v.suggested_use, sync_cloud=False)
-                except Exception as e:
+                    should_persist = False
+                    async with seen_urls_lock:
+                        if result.paper.url not in seen_urls:
+                            seen_urls.add(result.paper.url)
+                            should_persist = True
+                    if should_persist:
+                        p_id = save_paper(eval_id, result.paper, result.avg_score, sync_cloud=False)
+                        for r_idx, r in enumerate(result.rounds, start=1):
+                            save_debate_round(p_id, r_idx, r.advocate_argument, r.skeptic_argument, sync_cloud=False)
+                        for v in result.judge_verdicts:
+                            save_judge_verdict(p_id, v.run, v.seed, v.relevance_score, v.verdict, v.key_reasons, v.suggested_use, sync_cloud=False)
+                except (RuntimeError, ValueError, OSError) as e:
                     print(f"[Background Eval Worker error on '{paper.title}'] {e}", flush=True)
 
                 completed_count += 1
-                update_evaluation_progress(eval_id, completed=completed_count, status="RUNNING", sync_cloud=False)
+                update_evaluation_progress(
+                    eval_id,
+                    completed=completed_count,
+                    total=total_papers,
+                    status="RUNNING",
+                    sync_cloud=False,
+                )
+                await _maybe_checkpoint(total_papers)
 
-        tasks = [eval_one(p) for p in papers]
+        tasks = [eval_one(p) for p in papers_to_process]
         await asyncio.gather(*tasks)
 
+        await _maybe_checkpoint(total_papers, force=True)
+
         # Finalize and sync DB to cloud
-        update_evaluation_progress(eval_id, completed=len(papers), status="COMPLETED", sync_cloud=True)
-    except Exception as err:
+        update_evaluation_progress(eval_id, completed=total_papers, total=total_papers, status="COMPLETED", sync_cloud=True)
+    except asyncio.TimeoutError:
+        print(f"[Background Eval Worker Failed #{eval_id}] Timed out fetching papers after {FETCH_TIMEOUT_SECONDS}s", flush=True)
+        update_evaluation_progress(eval_id, completed=completed_count, status="FAILED", sync_cloud=True)
+    except (RuntimeError, ValueError, OSError) as err:
         print(f"[Background Eval Worker Failed #{eval_id}] {err}", flush=True)
         update_evaluation_progress(eval_id, completed=completed_count, status="FAILED", sync_cloud=True)
 
@@ -608,4 +714,4 @@ async def get_paper_detail_endpoint(paper_id: int):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run("server:app", host=os.environ.get("HOST", "127.0.0.1"), port=8080, reload=True)

@@ -898,7 +898,8 @@ document.addEventListener('DOMContentLoaded', () => {
           return;
         }
 
-        alert(`🚀 Background Evaluation #${data.eval_id} launched for ${data.total_papers} papers!\n\nYou can track live progress in the History tab at any time.`);
+        const totalText = Number.isFinite(data.total_papers) ? `${data.total_papers} papers` : 'paper fetch in progress';
+        alert(`🚀 Background Evaluation #${data.eval_id} launched (${totalText})!\n\nYou can track live progress in the History tab at any time.`);
         const historyTab = document.querySelector('.tab-btn[data-tab="tab-history"]');
         if (historyTab) historyTab.click();
         this.loadHistory();

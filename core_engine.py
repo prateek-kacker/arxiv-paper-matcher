@@ -352,7 +352,14 @@ def save_evaluation(problem: str, model: str, status: str = 'COMPLETED', total: 
     return eval_id
 
 
-def update_evaluation_progress(eval_id: int, completed: int, total: Optional[int] = None, status: Optional[str] = None, sync_cloud: bool = True):
+def update_evaluation_progress(
+    eval_id: int,
+    completed: int,
+    total: Optional[int] = None,
+    status: Optional[str] = None,
+    sync_cloud: bool = True,
+    emit_snapshot: bool = False,
+):
     with _STORE_LOCK:
         for ev in _STORE["evaluations"]:
             if int(ev["id"]) == int(eval_id):
@@ -365,8 +372,18 @@ def update_evaluation_progress(eval_id: int, completed: int, total: Optional[int
         _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
-        if status in {"COMPLETED", "FAILED"}:
+        if emit_snapshot or status in {"COMPLETED", "FAILED"}:
             _emit_evalrun_snapshot_to_cloud(eval_id)
+
+
+def load_evaluation_paper_urls(eval_id: int) -> set[str]:
+    """Return unique non-empty paper URLs already saved for an evaluation."""
+    with _STORE_LOCK:
+        return {
+            str(p.get("url", ""))
+            for p in _STORE["papers"]
+            if int(p.get("evaluation_id", -1)) == int(eval_id) and str(p.get("url", "")).strip()
+        }
 
 
 def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool = True) -> int:

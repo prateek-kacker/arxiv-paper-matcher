@@ -1,11 +1,13 @@
-"""
-arXiv CS.CL Paper Matcher — Multi-Agent Debate with Gemini LLM-as-Judge
+﻿"""
+arXiv CS.CL Paper Matcher â€” Multi-Agent Debate with Gemini LLM-as-Judge
 =========================================================================
 Fetches recent papers from arXiv CS.CL, then runs a multi-agent debate
 (Advocate, Skeptic, Judge-Panel) to assess each paper's relevance to your
 research problem.  All papers, debate transcripts, and judge verdicts are
 persisted in a local SQLite database.
 """
+
+# pylint: disable=broad-exception-caught,unused-argument,unused-variable
 
 import streamlit as st
 import arxiv
@@ -27,10 +29,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import pandas as pd
 from urllib import request, error
+from urllib.parse import urlparse
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Database
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 DB_PATH = Path(os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher.db")))
 DB_GCS_BUCKET = os.environ.get("PAPER_MATCHER_DB_BUCKET", "").strip()
@@ -71,7 +74,7 @@ def sync_db_from_cloud() -> tuple[bool, str]:
                     if p.exists():
                         p.unlink()
                 return True, f"DB downloaded from GCS bucket `{DB_GCS_BUCKET}`"
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, OSError) as e:
             return False, f"Failed to load DB from GCS: {e}"
 
     # 2. Check S3 if configured
@@ -85,7 +88,7 @@ def sync_db_from_cloud() -> tuple[bool, str]:
                 if p.exists():
                     p.unlink()
             return True, f"DB downloaded from AWS S3 bucket `{AWS_S3_BUCKET}`"
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, OSError) as e:
             return False, f"Failed to load DB from S3: {e}"
 
     return False, "Cloud persistence disabled (neither GCS nor S3 bucket set)"
@@ -109,7 +112,7 @@ def sync_db_to_cloud() -> tuple[bool, str]:
                 blob = bucket.blob(DB_GCS_BLOB)
                 blob.upload_from_filename(str(DB_PATH))
                 results.append(f"GCS (`{DB_GCS_BUCKET}`)")
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 results.append(f"GCS error: {e}")
 
         if AWS_S3_BUCKET:
@@ -118,7 +121,7 @@ def sync_db_to_cloud() -> tuple[bool, str]:
                 s3 = boto3.client("s3")
                 s3.upload_file(str(DB_PATH), AWS_S3_BUCKET, AWS_S3_KEY)
                 results.append(f"S3 (`{AWS_S3_BUCKET}`)")
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 results.append(f"S3 error: {e}")
 
     return True, f"Uploaded to: {', '.join(results)}"
@@ -541,14 +544,14 @@ def find_matching_past_papers(urls: list[str]) -> dict[str, list[dict]]:
         return {}
     conn = get_db()
     placeholders = ",".join("?" for _ in urls)
-    rows = conn.execute(
-        f"""SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date
-            FROM papers p
-            JOIN evaluations e ON e.id = p.evaluation_id
-            WHERE p.url IN ({placeholders})
-            ORDER BY p.avg_score DESC""",
-        urls,
-    ).fetchall()
+    query = (
+        "SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date "
+        "FROM papers p "
+        "JOIN evaluations e ON e.id = p.evaluation_id "
+        "WHERE p.url IN (" + placeholders + ") "
+        "ORDER BY p.avg_score DESC"
+    )
+    rows = conn.execute(query, urls).fetchall()
     conn.close()
     matches: dict[str, list[dict]] = {}
     for r in rows:
@@ -557,12 +560,12 @@ def find_matching_past_papers(urls: list[str]) -> dict[str, list[dict]]:
     return matches
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Data Models
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 class LLMQuotaExhaustedError(Exception):
-    """Raised when a model's daily quota is exhausted — retrying won't help for hours."""
+    """Raised when a model's daily quota is exhausted â€” retrying won't help for hours."""
 
 
 @dataclass
@@ -602,9 +605,9 @@ class DebateResult:
     combined_suggested_use: str = ""
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # arXiv Fetcher
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def fetch_arxiv_papers(
     max_results: Optional[int] = 50,
@@ -651,20 +654,20 @@ def fetch_arxiv_papers(
     return papers
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Multi-Agent Debate System  (with 5-Judge Panel)
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 ADVOCATE_SYSTEM = """You are the ADVOCATE agent in a research paper relevance debate.
 Your role is to argue FOR the relevance of the given paper to the user's research problem.
 Find connections, potential applications, methodological overlaps, and useful insights.
-Be specific — cite parts of the abstract that support your argument.
+Be specific â€” cite parts of the abstract that support your argument.
 Keep your response concise (150 words max)."""
 
 SKEPTIC_SYSTEM = """You are the SKEPTIC agent in a research paper relevance debate.
 Your role is to argue AGAINST the relevance of the given paper to the user's research problem.
 Identify differences in scope, methodology, domain, or focus that make the paper less useful.
-Be specific — cite parts of the abstract that weaken the relevance claim.
+Be specific â€” cite parts of the abstract that weaken the relevance claim.
 Keep your response concise (150 words max)."""
 
 JUDGE_SYSTEM = """You are the JUDGE agent in a research paper relevance debate.
@@ -714,7 +717,7 @@ class DebateEngine:
                     ),
                 )
                 return response.text
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 err_str = str(e)
                 lower = err_str.lower()
                 is_daily_quota = "per_day" in lower or "generate_requests_per_day" in lower
@@ -755,7 +758,7 @@ class DebateEngine:
                     if chunk.text:
                         yield chunk.text
                 return
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 err_str = str(e)
                 lower = err_str.lower()
                 is_daily_quota = "per_day" in lower or "generate_requests_per_day" in lower
@@ -773,7 +776,7 @@ class DebateEngine:
                 wait = (2 ** (attempt + 2) if is_rate_limit else 2 ** attempt) + random.uniform(0, 2)
                 if status_cb:
                     reason = "Rate limited" if is_rate_limit else "Error"
-                    status_cb(f"⏳ {reason} — retrying attempt {attempt + 2}/6 in {wait:.0f}s… ({err_str[:120]})")
+                    status_cb(f"â³ {reason} â€” retrying attempt {attempt + 2}/6 in {wait:.0f}sâ€¦ ({err_str[:120]})")
                 time.sleep(wait)
                 if status_cb:
                     status_cb("")
@@ -787,7 +790,7 @@ class DebateEngine:
         debate_history = ""
 
         for round_num in range(1, self.debate_rounds + 1):
-            st.markdown(f"**🟢 Advocate — Round {round_num}/{self.debate_rounds}**")
+            st.markdown(f"**ðŸŸ¢ Advocate â€” Round {round_num}/{self.debate_rounds}**")
             retry_ph = st.empty()
 
             def _retry_status(msg: str, _ph=retry_ph):
@@ -804,7 +807,7 @@ class DebateEngine:
                 self._call_llm_sync_stream(ADVOCATE_SYSTEM, advocate_prompt, status_cb=_retry_status)
             )
 
-            st.markdown(f"**🔴 Skeptic — Round {round_num}/{self.debate_rounds}**")
+            st.markdown(f"**ðŸ”´ Skeptic â€” Round {round_num}/{self.debate_rounds}**")
             retry_ph2 = st.empty()
 
             def _retry_status2(msg: str, _ph=retry_ph2):
@@ -815,7 +818,7 @@ class DebateEngine:
 
             skeptic_prompt = (
                 f"{context}\n\n{debate_history}"
-                f"Round {round_num} — Advocate said:\n{advocate_text}\n\n"
+                f"Round {round_num} â€” Advocate said:\n{advocate_text}\n\n"
                 f"Now present your counter-argument AGAINST this paper's relevance."
             )
             skeptic_text = st.write_stream(
@@ -831,9 +834,9 @@ class DebateEngine:
                 f"Advocate: {advocate_text}\nSkeptic: {skeptic_text}\n"
             )
 
-        # 5 judges run concurrently via asyncio (no streaming — keeps them parallel)
+        # 5 judges run concurrently via asyncio (no streaming â€” keeps them parallel)
         judge_msg = st.empty()
-        judge_msg.info("⚖️ 5 judges deliberating in parallel…")
+        judge_msg.info("âš–ï¸ 5 judges deliberating in parallelâ€¦")
 
         judge_base_prompt = (
             f"{context}\n\n## Full Debate Transcript\n{debate_history}\n\n"
@@ -873,7 +876,7 @@ class DebateEngine:
             result.combined_reasons = best.key_reasons
             result.combined_suggested_use = best.suggested_use
 
-        score_icon = "🟢" if result.avg_score >= 7 else "🟡" if result.avg_score >= 4 else "🔴"
+        score_icon = "ðŸŸ¢" if result.avg_score >= 7 else "ðŸŸ¡" if result.avg_score >= 4 else "ðŸ”´"
         judge_chips = "  ".join(
             f"J{v.run}: **{v.relevance_score}**" for v in result.judge_verdicts
         )
@@ -902,19 +905,19 @@ class DebateEngine:
         result = DebateResult(paper=paper)
         debate_history = ""
 
-        # ── Debate rounds (sequential: skeptic depends on advocate) ──
+        # â”€â”€ Debate rounds (sequential: skeptic depends on advocate) â”€â”€
         for round_num in range(1, self.debate_rounds + 1):
-            _status(f"🟢 Advocate Round {round_num}/{self.debate_rounds}")
+            _status(f"ðŸŸ¢ Advocate Round {round_num}/{self.debate_rounds}")
             advocate_prompt = (
                 f"{context}\n\n{debate_history}"
                 f"Round {round_num}: Present your argument FOR this paper's relevance."
             )
             advocate_arg = await self._call_llm(ADVOCATE_SYSTEM, advocate_prompt)
 
-            _status(f"🔴 Skeptic Round {round_num}/{self.debate_rounds}")
+            _status(f"ðŸ”´ Skeptic Round {round_num}/{self.debate_rounds}")
             skeptic_prompt = (
                 f"{context}\n\n{debate_history}"
-                f"Round {round_num} — Advocate said:\n{advocate_arg}\n\n"
+                f"Round {round_num} â€” Advocate said:\n{advocate_arg}\n\n"
                 f"Now present your counter-argument AGAINST this paper's relevance."
             )
             skeptic_arg = await self._call_llm(SKEPTIC_SYSTEM, skeptic_prompt)
@@ -929,8 +932,8 @@ class DebateEngine:
                 f"Skeptic: {skeptic_arg}\n"
             )
 
-        # ── 5-Judge Panel (all judges run concurrently) ──
-        _status("⚖️ Judge Panel (5 judges deliberating)")
+        # â”€â”€ 5-Judge Panel (all judges run concurrently) â”€â”€
+        _status("âš–ï¸ Judge Panel (5 judges deliberating)")
         judge_base_prompt = (
             f"{context}\n\n"
             f"## Full Debate Transcript\n{debate_history}\n\n"
@@ -965,7 +968,7 @@ class DebateEngine:
             *[_run_judge(i) for i in range(NUM_JUDGES)]
         ))
 
-        # ── Aggregate scores ──
+        # â”€â”€ Aggregate scores â”€â”€
         valid_scores = [v.relevance_score for v in result.judge_verdicts if v.relevance_score > 0]
         result.avg_score = round(sum(valid_scores) / len(valid_scores), 1) if valid_scores else 0.0
 
@@ -977,11 +980,11 @@ class DebateEngine:
             result.combined_reasons = best.key_reasons
             result.combined_suggested_use = best.suggested_use
 
-        _status(f"✅ Done — Score: {result.avg_score}/10")
+        _status(f"âœ… Done â€” Score: {result.avg_score}/10")
         return result
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Rendering helpers
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def _judge_chips_html(verdicts: list[JudgeVerdict]) -> str:
     """Build coloured HTML chips for each judge score."""
@@ -999,24 +1002,25 @@ def _judge_chips_html(verdicts: list[JudgeVerdict]) -> str:
 def _render_results_list(results: list[DebateResult], show_top_badge: bool = False,
                          key_prefix: str = "all", past_matches: dict | None = None):
     """Render a list of paper results with advocate/skeptic + judge panel."""
+    _ = key_prefix
     if past_matches is None:
         past_matches = {}
-    for idx, r in enumerate(results):
+    for r in results:
         score_class = (
             "score-high" if r.avg_score >= 7
             else "score-mid" if r.avg_score >= 4
             else "score-low"
         )
-        badge = "⭐ " if show_top_badge else ""
+        badge = "â­ " if show_top_badge else ""
         is_match = r.paper.url in past_matches
         card_class = "paper-card-match" if is_match else "paper-card"
-        match_html = " <span class='match-badge'>🔄 Previously Evaluated</span>" if is_match else ""
+        match_html = " <span class='match-badge'>ðŸ”„ Previously Evaluated</span>" if is_match else ""
 
         st.markdown(
             f"<div class='{card_class}'>"
             f"<span class='{score_class}'>{badge}{r.avg_score}/10</span>"
             f"&nbsp;&nbsp;<strong>{r.paper.title}</strong>{match_html}<br/>"
-            f"<small>👤 {r.paper.authors} &nbsp;|&nbsp; 📅 {r.paper.published}</small>"
+            f"<small>ðŸ‘¤ {r.paper.authors} &nbsp;|&nbsp; ðŸ“… {r.paper.published}</small>"
             f"</div>",
             unsafe_allow_html=True,
         )
@@ -1024,10 +1028,10 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
         # Show past evaluation comparison if matched
         if is_match:
             past_records = past_matches[r.paper.url]
-            with st.expander(f"🔄 Past Evaluation ({len(past_records)} match{'es' if len(past_records) > 1 else ''})"):
+            with st.expander(f"ðŸ”„ Past Evaluation ({len(past_records)} match{'es' if len(past_records) > 1 else ''})"):
                 for pr in past_records:
                     past_score = pr.get('avg_score', 0)
-                    past_icon = "🟢" if past_score >= 7 else "🟡" if past_score >= 4 else "🔴"
+                    past_icon = "ðŸŸ¢" if past_score >= 7 else "ðŸŸ¡" if past_score >= 4 else "ðŸ”´"
                     st.markdown(
                         f"**Past research problem:**\n> {pr.get('problem_text', 'N/A')[:200]}"
                         f"{'...' if len(pr.get('problem_text', '')) > 200 else ''}"
@@ -1042,7 +1046,7 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
         # Abstract and paper link
         st.write(r.paper.abstract)
         if r.paper.url:
-            st.link_button("📄 Open Paper", r.paper.url)
+            st.link_button("ðŸ“„ Open Paper", r.paper.url)
 
         # Judge panel scores
         if r.judge_verdicts:
@@ -1052,42 +1056,42 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
                 unsafe_allow_html=True,
             )
 
-        col_a, col_b = st.columns([3, 1])
+        col_a, _col_b = st.columns([3, 1])
         with col_a:
             st.markdown(f"**Verdict:** {r.combined_verdict}")
             if r.combined_reasons:
-                st.markdown("**Key Reasons:** " + " • ".join(r.combined_reasons))
+                st.markdown("**Key Reasons:** " + " â€¢ ".join(r.combined_reasons))
             if r.combined_suggested_use:
                 st.markdown(f"**Suggested Use:** {r.combined_suggested_use}")
 
         # Full advocate/skeptic conversation sequence
         if r.rounds:
             for i, rnd in enumerate(r.rounds, 1):
-                with st.chat_message("user", avatar="🟢"):
+                with st.chat_message("user", avatar="ðŸŸ¢"):
                     st.markdown(f"**Advocate** (Round {i})")
                     st.write(rnd.advocate_argument)
-                with st.chat_message("user", avatar="🔴"):
+                with st.chat_message("user", avatar="ðŸ”´"):
                     st.markdown(f"**Skeptic** (Round {i})")
                     st.write(rnd.skeptic_argument)
 
         # All 5 judge verdicts
         if r.judge_verdicts:
             for jv in r.judge_verdicts:
-                icon = "🟢" if jv.relevance_score >= 7 else "🟡" if jv.relevance_score >= 4 else "🔴"
-                with st.chat_message("user", avatar="⚖️"):
-                    st.markdown(f"**Judge {jv.run}** (seed {jv.seed}) — Score: **{icon} {jv.relevance_score}/10**")
+                icon = "ðŸŸ¢" if jv.relevance_score >= 7 else "ðŸŸ¡" if jv.relevance_score >= 4 else "ðŸ”´"
+                with st.chat_message("user", avatar="âš–ï¸"):
+                    st.markdown(f"**Judge {jv.run}** (seed {jv.seed}) â€” Score: **{icon} {jv.relevance_score}/10**")
                     if jv.verdict:
                         st.write(jv.verdict)
                     if jv.key_reasons:
-                        st.caption("Reasons: " + " • ".join(jv.key_reasons))
+                        st.caption("Reasons: " + " â€¢ ".join(jv.key_reasons))
                     if jv.suggested_use:
                         st.caption(f"Suggested use: {jv.suggested_use}")
 
             # Final decision
             st.markdown(
-                f"### 🏆 Final Decision: **{r.avg_score}/10**\n\n"
+                f"### ðŸ† Final Decision: **{r.avg_score}/10**\n\n"
                 f"**Verdict:** {r.combined_verdict}\n\n"
-                + (f"**Key Reasons:** {' • '.join(r.combined_reasons)}\n\n" if r.combined_reasons else "")
+                + (f"**Key Reasons:** {' â€¢ '.join(r.combined_reasons)}\n\n" if r.combined_reasons else "")
                 + (f"**Suggested Use:** {r.combined_suggested_use}" if r.combined_suggested_use else "")
             )
 
@@ -1096,34 +1100,34 @@ def _render_results_list(results: list[DebateResult], show_top_badge: bool = Fal
 
 def _render_debate_detail(r: DebateResult):
     """Full debate transcript and all 5 judge verdicts."""
-    st.markdown("### 🗣️ Debate Transcript")
+    st.markdown("### ðŸ—£ï¸ Debate Transcript")
     for i, rnd in enumerate(r.rounds, 1):
-        with st.chat_message("user", avatar="🟢"):
+        with st.chat_message("user", avatar="ðŸŸ¢"):
             st.markdown(f"**Advocate** (Round {i})")
             st.write(rnd.advocate_argument)
-        with st.chat_message("user", avatar="🔴"):
+        with st.chat_message("user", avatar="ðŸ”´"):
             st.markdown(f"**Skeptic** (Round {i})")
             st.write(rnd.skeptic_argument)
 
-    st.markdown("### 🏛️ Judge Panel (A5 independent verdicts)")
+    st.markdown("### ðŸ›ï¸ Judge Panel (A5 independent verdicts)")
     for jv in r.judge_verdicts:
-        icon = "🟢" if jv.relevance_score >= 7 else "🟡" if jv.relevance_score >= 4 else "🔴"
-        with st.chat_message("user", avatar="⚖️"):
+        icon = "ðŸŸ¢" if jv.relevance_score >= 7 else "ðŸŸ¡" if jv.relevance_score >= 4 else "ðŸ”´"
+        with st.chat_message("user", avatar="âš–ï¸"):
             st.markdown(
-                f"**Judge {jv.run}** (seed {jv.seed}) — "
+                f"**Judge {jv.run}** (seed {jv.seed}) â€” "
                 f"Score: **{icon} {jv.relevance_score}/10**"
             )
             if jv.verdict:
                 st.write(jv.verdict)
             if jv.key_reasons:
-                st.caption("Reasons: " + " • ".join(jv.key_reasons))
+                st.caption("Reasons: " + " â€¢ ".join(jv.key_reasons))
             if jv.suggested_use:
                 st.caption(f"Suggested use: {jv.suggested_use}")
 
     st.markdown(
-        f"### 🏆 Final Decision: **{r.avg_score}/10**\n\n"
+        f"### ðŸ† Final Decision: **{r.avg_score}/10**\n\n"
         f"**Verdict:** {r.combined_verdict}\n\n"
-        + (f"**Key Reasons:** {' • '.join(r.combined_reasons)}\n\n" if r.combined_reasons else "")
+        + (f"**Key Reasons:** {' â€¢ '.join(r.combined_reasons)}\n\n" if r.combined_reasons else "")
         + (f"**Suggested Use:** {r.combined_suggested_use}" if r.combined_suggested_use else "")
     )
 
@@ -1195,6 +1199,9 @@ def _post_results_to_webhook(
         headers["Authorization"] = f"Bearer {token.strip()}"
 
     data = json.dumps(payload).encode("utf-8")
+    scheme = urlparse(endpoint).scheme.lower()
+    if scheme not in {"http", "https"}:
+        return False, "Webhook endpoint must use http or https"
     req = request.Request(endpoint, data=data, headers=headers, method="POST")
 
     try:
@@ -1205,7 +1212,7 @@ def _post_results_to_webhook(
             return False, f"Unexpected HTTP status {status_code}"
     except error.HTTPError as e:
         return False, f"Webhook HTTP error: {e.code}"
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, OSError) as e:
         return False, f"Webhook request failed: {e}"
 
 
@@ -1227,12 +1234,13 @@ def _run_evaluation_headless(
     progress_cb=None,  # callable(stage: str, done: int, total: int)
 ) -> tuple[Optional[int], list[DebateResult], Optional[str]]:
     """Run evaluation without any Streamlit UI calls. Safe for background threads."""
+    _ = min_score
 
     def _cb(stage: str, done: int = 0, total: int = 0):
         if progress_cb:
             try:
                 progress_cb(stage, done, total)
-            except Exception:
+            except (RuntimeError, ValueError, TypeError, OSError):
                 pass
 
     _cb("fetching", 0, 0)
@@ -1242,7 +1250,7 @@ def _run_evaluation_headless(
             search_query=keyword_filter,
             days_back=days_back,
         )
-    except Exception as e:
+    except (RuntimeError, ValueError, TypeError, OSError) as e:
         return None, [], f"Failed to fetch papers: {e}"
 
     if not papers:
@@ -1274,7 +1282,7 @@ def _run_evaluation_headless(
                 ),
                 avg_score=0.0,
             )
-        except Exception as exc:
+        except (RuntimeError, ValueError, TypeError, OSError) as exc:
             return DebateResult(
                 paper=paper,
                 combined_verdict=f"Evaluation failed: {exc}",
@@ -1326,7 +1334,7 @@ def _launch_bg_recurring(task_id: str, sch: dict, api_key: str,
         "label": sch.get("label") or f"Schedule #{sch['id']}",
         "sch_id": sch["id"],
         "status": "queued",
-        "stage": "Waiting to start…",
+        "stage": "Waiting to startâ€¦",
         "done_papers": 0,
         "total_papers": sch.get("max_papers") or "?",
         "eval_id": None,
@@ -1337,7 +1345,7 @@ def _launch_bg_recurring(task_id: str, sch: dict, api_key: str,
         "sch": sch,
     }
     q.put({"task_id": task_id, "status": "queued",
-           "stage": "Starting…", "done_papers": 0, "total_papers": sch.get("max_papers") or "?"})
+           "stage": "Startingâ€¦", "done_papers": 0, "total_papers": sch.get("max_papers") or "?"})
 
     def _thread():
         def _cb(stage: str, done: int, total: int):
@@ -1419,8 +1427,10 @@ def _run_full_evaluation(
     status_prefix: str = "",
 ) -> tuple[Optional[int], list[DebateResult], Optional[str]]:
     """Run the same end-to-end evaluation pipeline used by New Evaluation."""
+    _ = max_concurrent
+    _ = min_score
     prefix = f"{status_prefix} " if status_prefix else ""
-    with st.status(f"{prefix}📡 Fetching papers from arXiv CS.CL...", expanded=True) as status:
+    with st.status(f"{prefix}ðŸ“¡ Fetching papers from arXiv CS.CL...", expanded=True) as status:
         try:
             papers = fetch_arxiv_papers(
                 max_results=max_papers,
@@ -1429,9 +1439,9 @@ def _run_full_evaluation(
             )
             mode_label = (f"from the last **{days_back}** days"
                           if days_back else f"(latest **{max_papers}**)")
-            st.write(f"✅ Fetched **{len(papers)}** papers {mode_label}")
+            st.write(f"âœ… Fetched **{len(papers)}** papers {mode_label}")
             status.update(label=f"{prefix}Fetched {len(papers)} papers", state="complete")
-        except Exception as e:
+        except (RuntimeError, ValueError, TypeError, OSError) as e:
             return None, [], f"Failed to fetch papers: {e}"
 
     if not papers:
@@ -1440,11 +1450,11 @@ def _run_full_evaluation(
     eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
     results: list[DebateResult] = []
 
-    overall_progress = st.progress(0, text=f"{prefix}Starting evaluation of {len(papers)} papers…")
+    overall_progress = st.progress(0, text=f"{prefix}Starting evaluation of {len(papers)} papersâ€¦")
     eng = DebateEngine(client=genai.Client(api_key=api_key), model_name=model_name)
 
     for idx, paper in enumerate(papers):
-        short_title = paper.title[:80] + ("…" if len(paper.title) > 80 else "")
+        short_title = paper.title[:80] + ("â€¦" if len(paper.title) > 80 else "")
         overall_progress.progress(
             idx / len(papers),
             text=f"{prefix}Paper {idx + 1}/{len(papers)}: {short_title}",
@@ -1452,17 +1462,17 @@ def _run_full_evaluation(
         score_placeholder = st.empty()
         quota_exhausted = False
         with st.expander(
-            f"📄 [{idx + 1}/{len(papers)}] {paper.title}",
+            f"ðŸ“„ [{idx + 1}/{len(papers)}] {paper.title}",
             expanded=True,
         ):
-            st.caption(f"👤 {paper.authors} &nbsp;|&nbsp; 📅 {paper.published}")
+            st.caption(f"ðŸ‘¤ {paper.authors} &nbsp;|&nbsp; ðŸ“… {paper.published}")
             try:
                 result = eng.run_debate_live(paper, problem_statement)
             except LLMQuotaExhaustedError as e:
-                st.error(f"🚫 {e}")
+                st.error(f"ðŸš« {e}")
                 result = DebateResult(paper=paper, combined_verdict=str(e), avg_score=0.0)
                 quota_exhausted = True
-            except Exception as e:
+            except (RuntimeError, ValueError, TypeError, OSError) as e:
                 result = DebateResult(
                     paper=paper,
                     combined_verdict=f"Evaluation failed: {e}",
@@ -1470,15 +1480,15 @@ def _run_full_evaluation(
                 )
         results.append(result)
         # Collapse completed paper and show inline score
-        score_icon = "🟢" if result.avg_score >= 7 else "🟡" if result.avg_score >= 4 else "🔴"
+        score_icon = "ðŸŸ¢" if result.avg_score >= 7 else "ðŸŸ¡" if result.avg_score >= 4 else "ðŸ”´"
         score_placeholder.markdown(
-            f"{score_icon} **{result.avg_score}/10** — {paper.title[:80]}"
+            f"{score_icon} **{result.avg_score}/10** â€” {paper.title[:80]}"
         )
         if quota_exhausted:
             remaining = len(papers) - idx - 1
             if remaining > 0:
                 st.warning(
-                    f"⏹️ Stopped early — skipping {remaining} remaining paper(s) because the "
+                    f"â¹ï¸ Stopped early â€” skipping {remaining} remaining paper(s) because the "
                     f"model's daily quota is exhausted. Switch to a different Gemini model and re-run."
                 )
             break
@@ -1486,7 +1496,7 @@ def _run_full_evaluation(
     overall_progress.progress(1.0, text=f"{prefix}Evaluated {len(results)}/{len(papers)} papers.")
 
     save_stage = st.empty()
-    save_stage.info(f"**Stage 2 of 3 — Saving results to database** &nbsp;|&nbsp; {len(results)} papers evaluated")
+    save_stage.info(f"**Stage 2 of 3 â€” Saving results to database** &nbsp;|&nbsp; {len(results)} papers evaluated")
 
     for r in results:
         paper_id = save_paper(eval_id, r.paper, r.avg_score, sync_cloud=False)
@@ -1511,7 +1521,7 @@ def _run_full_evaluation(
             )
 
     # Upload once after all writes to avoid per-row cloud sync overhead.
-    save_stage.info("**Stage 3 of 3 — Syncing to cloud storage...**")
+    save_stage.info("**Stage 3 of 3 â€” Syncing to cloud storage...**")
     sync_db_to_gcs()
     save_stage.empty()
 
@@ -1523,20 +1533,20 @@ def _run_full_evaluation(
     return eval_id, results, None
 
 
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Streamlit UI
-# ──────────────────────────────────────────────────────────────────────────────
+# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def main():
     st.set_page_config(
         page_title="arXiv CS.CL Paper Matcher",
-        page_icon="📚",
+        page_icon="ðŸ“š",
         layout="wide",
     )
     restored, restore_msg = sync_db_from_gcs()
     init_db()
 
-    # ── Custom CSS ──
+    # â”€â”€ Custom CSS â”€â”€
     st.markdown("""
     <style>
     .score-high { color: #00c853; font-weight: bold; font-size: 1.4em; }
@@ -1565,10 +1575,10 @@ def main():
     </style>
     """, unsafe_allow_html=True)
 
-    st.title("📚 arXiv CS.CL Paper Matcher")
-    st.caption("Multi-Agent Debate  •  5-Judge Panel  •  Gemini LLM  •  SQLite Persistence")
+    st.title("ðŸ“š arXiv CS.CL Paper Matcher")
+    st.caption("Multi-Agent Debate  â€¢  5-Judge Panel  â€¢  Gemini LLM  â€¢  SQLite Persistence")
 
-    # ── Resolve API key from Secret Manager env (never shown in UI) ──
+    # â”€â”€ Resolve API key from Secret Manager env (never shown in UI) â”€â”€
     api_key = os.environ.get("GEMINI_API_KEY", "")
     webhook_url_default = os.environ.get("KACKERS_POST_URL", "")
     webhook_token = os.environ.get("KACKERS_POST_TOKEN", "")
@@ -1576,20 +1586,20 @@ def main():
     auto_push_recurring_default = os.environ.get(
         "AUTO_PUSH_RECURRING_RESULTS", "true").strip().lower() == "true"
 
-    # ── Sidebar ──
+    # â”€â”€ Sidebar â”€â”€
     with st.sidebar:
-        st.header("⚙️ Settings")
+        st.header("âš™ï¸ Settings")
         if api_key:
-            st.success("🔑 API key loaded from Secret Manager")
+            st.success("ðŸ”‘ API key loaded from Secret Manager")
         else:
-            st.warning("⚠️ No API key found. Set GEMINI_API_KEY in Secret Manager.")
+            st.warning("âš ï¸ No API key found. Set GEMINI_API_KEY in Secret Manager.")
         if DB_GCS_BUCKET:
             if restored:
-                st.caption(f"💾 Persistent DB loaded from GCS bucket `{DB_GCS_BUCKET}`")
+                st.caption(f"ðŸ’¾ Persistent DB loaded from GCS bucket `{DB_GCS_BUCKET}`")
             else:
-                st.caption(f"💾 Persistent DB enabled: {restore_msg}")
+                st.caption(f"ðŸ’¾ Persistent DB enabled: {restore_msg}")
         else:
-            st.caption("💾 Persistent DB disabled (set PAPER_MATCHER_DB_BUCKET)")
+            st.caption("ðŸ’¾ Persistent DB disabled (set PAPER_MATCHER_DB_BUCKET)")
         st.divider()
         st.markdown("**Webhook Output**")
         webhook_url = st.text_input(
@@ -1609,9 +1619,9 @@ def main():
             help="When enabled, recurring runs are posted automatically to the webhook.",
         )
         if webhook_token:
-            st.caption("🔐 Webhook token loaded from Secret Manager")
+            st.caption("ðŸ” Webhook token loaded from Secret Manager")
         elif webhook_url.strip():
-            st.caption("ℹ️ No webhook token set (requests sent without Authorization header)")
+            st.caption("â„¹ï¸ No webhook token set (requests sent without Authorization header)")
         model_name = st.selectbox("Gemini Model", [
             "gemini-3-pro-preview",
             "gemini-3-flash-preview",
@@ -1641,16 +1651,16 @@ def main():
             "2. For each paper, **Advocate** argues FOR\n"
             "3. **Skeptic** argues AGAINST (2 rounds)\n"
             "4. **5 Judges** independently score 1-10\n"
-            "5. Average score → final ranking\n"
+            "5. Average score â†’ final ranking\n"
             "6. Everything stored in SQLite DB"
         )
 
     effective_api_key = api_key  # always comes from Secret Manager env var
 
-    # ── Drain background task queue (non-blocking) ──
+    # â”€â”€ Drain background task queue (non-blocking) â”€â”€
     _drain_bg_queue()
 
-    # ── Launch due recurring schedules in background (non-blocking) ──
+    # â”€â”€ Launch due recurring schedules in background (non-blocking) â”€â”€
     if effective_api_key:
         existing_task_ids = set(st.session_state.get("_bg_tasks", {}).keys())
         due_schedules = load_due_recurring_schedules()
@@ -1666,19 +1676,19 @@ def main():
                     webhook_token=webhook_token,
                 )
 
-    # ── Page tabs ──
+    # â”€â”€ Page tabs â”€â”€
     page_new, page_recurring, page_history = st.tabs([
-        "🔬 New Evaluation",
-        "⏰ Recurring Evaluations",
-        "🗄️ Past Evaluations",
+        "ðŸ”¬ New Evaluation",
+        "â° Recurring Evaluations",
+        "ðŸ—„ï¸ Past Evaluations",
     ])
 
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # NEW EVALUATION TAB
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     with page_new:
         problem_statement = st.text_area(
-            "🔬 Describe your research problem",
+            "ðŸ”¬ Describe your research problem",
             height=150,
             placeholder=(
                 "Example: I am building a low-resource machine translation system "
@@ -1696,20 +1706,20 @@ def main():
 
         col1, col2, col3, col4 = st.columns([1, 1, 1, 1])
         with col1:
-            run_button = st.button("🚀 Fetch & Evaluate All", type="primary",
+            run_button = st.button("ðŸš€ Fetch & Evaluate All", type="primary",
                                    use_container_width=True)
         with col2:
-            fetch_only = st.button("📡 Fetch Papers Only",
+            fetch_only = st.button("ðŸ“¡ Fetch Papers Only",
                                    use_container_width=True)
         with col3:
-            if st.button("🗑️ Clear Results", use_container_width=True):
+            if st.button("ðŸ—‘ï¸ Clear Results", use_container_width=True):
                 st.session_state.pop("results", None)
                 st.session_state.pop("fetched_papers", None)
                 st.session_state.pop("single_results", None)
                 st.rerun()
         with col4:
             add_recurring_from_new = st.button(
-                "⏰ Add to Recurring",
+                "â° Add to Recurring",
                 use_container_width=True,
                 help="Save this exact evaluation configuration as a daily recurring job.",
             )
@@ -1737,7 +1747,7 @@ def main():
                     f"{recurring_time_new.strftime('%H:%M')} (daily)."
                 )
 
-        # ── Execution ──
+        # â”€â”€ Execution â”€â”€
         if run_button:
             if not effective_api_key:
                 st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
@@ -1772,12 +1782,12 @@ def main():
                             token=webhook_token,
                         )
                         if ok:
-                            st.session_state["_post_msg"] = ("success", f"📤 {msg}")
+                            st.session_state["_post_msg"] = ("success", f"ðŸ“¤ {msg}")
                         else:
-                            st.session_state["_post_msg"] = ("warning", f"📤 {msg}")
+                            st.session_state["_post_msg"] = ("warning", f"ðŸ“¤ {msg}")
                     st.rerun()
 
-        # ── Show post-webhook message after rerun ──
+        # â”€â”€ Show post-webhook message after rerun â”€â”€
         if "_post_msg" in st.session_state:
             kind, msg = st.session_state.pop("_post_msg")
             if kind == "success":
@@ -1785,14 +1795,14 @@ def main():
             else:
                 st.warning(msg)
 
-        # ── Fetch Only ──
+        # â”€â”€ Fetch Only â”€â”€
         if fetch_only:
             if not effective_api_key:
                 st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
             elif not problem_statement.strip():
                 st.error("Please describe your research problem.")
             else:
-                with st.status("📡 Fetching papers from arXiv CS.CL...", expanded=True) as status:
+                with st.status("ðŸ“¡ Fetching papers from arXiv CS.CL...", expanded=True) as status:
                     try:
                         papers = fetch_arxiv_papers(
                             max_results=max_papers,
@@ -1801,9 +1811,9 @@ def main():
                         )
                         mode_label = (f"from the last **{days_back}** days"
                                       if days_back else f"(latest **{max_papers}**)")
-                        st.write(f"✅ Fetched **{len(papers)}** papers {mode_label}")
+                        st.write(f"âœ… Fetched **{len(papers)}** papers {mode_label}")
                         status.update(label=f"Fetched {len(papers)} papers", state="complete")
-                    except Exception as e:
+                    except (RuntimeError, ValueError, TypeError, OSError) as e:
                         st.error(f"Failed to fetch papers: {e}")
                         papers = []
                 if papers:
@@ -1813,7 +1823,7 @@ def main():
                 else:
                     st.warning("No papers found. Try adjusting keyword filters.")
 
-        # ── Fetched Papers (per-paper evaluate) ──
+        # â”€â”€ Fetched Papers (per-paper evaluate) â”€â”€
         if "fetched_papers" in st.session_state:
             fetched = st.session_state["fetched_papers"]
             single_results: dict[str, DebateResult] = st.session_state.get("single_results", {})
@@ -1824,10 +1834,10 @@ def main():
             match_count = sum(1 for p in fetched if p.url in past_matches)
 
             st.divider()
-            st.subheader(f"📄 Fetched Papers ({len(fetched)})")
+            st.subheader(f"ðŸ“„ Fetched Papers ({len(fetched)})")
             if match_count:
                 st.info(
-                    f"🔄 **{match_count}** paper(s) found in past evaluations "
+                    f"ðŸ”„ **{match_count}** paper(s) found in past evaluations "
                     f"(highlighted in orange). You can remove them before evaluating."
                 )
             st.caption("Click **Evaluate** on any paper to run the multi-agent debate.")
@@ -1840,11 +1850,11 @@ def main():
                 with st.container():
                     # Title row with match badge
                     card_class = "paper-card-match" if is_match else "paper-card"
-                    match_html = " <span class='match-badge'>🔄 Previously Evaluated</span>" if is_match else ""
+                    match_html = " <span class='match-badge'>ðŸ”„ Previously Evaluated</span>" if is_match else ""
                     st.markdown(
                         f"<div class='{card_class}'>"
                         f"<strong>{paper.title}</strong>{match_html}<br/>"
-                        f"<small>👤 {paper.authors} &nbsp;|&nbsp; 📅 {paper.published}</small>"
+                        f"<small>ðŸ‘¤ {paper.authors} &nbsp;|&nbsp; ðŸ“… {paper.published}</small>"
                         f"</div>",
                         unsafe_allow_html=True,
                     )
@@ -1852,12 +1862,12 @@ def main():
                     # Show past evaluation info if matched
                     if is_match:
                         past_records = past_matches[paper.url]
-                        with st.expander(f"🔄 Past Evaluation ({len(past_records)} match{'es' if len(past_records) > 1 else ''})", expanded=False):
+                        with st.expander(f"ðŸ”„ Past Evaluation ({len(past_records)} match{'es' if len(past_records) > 1 else ''})", expanded=False):
                             st.markdown(f"**Current research problem:**\n> {stored_problem[:200]}{'...' if len(stored_problem) > 200 else ''}")
                             st.divider()
                             for pr in past_records:
                                 past_score = pr.get('avg_score', 0)
-                                past_icon = "🟢" if past_score >= 7 else "🟡" if past_score >= 4 else "🔴"
+                                past_icon = "ðŸŸ¢" if past_score >= 7 else "ðŸŸ¡" if past_score >= 4 else "ðŸ”´"
                                 st.markdown(
                                     f"**Past research problem:**\n> {pr.get('problem_text', 'N/A')[:200]}"
                                     f"{'...' if len(pr.get('problem_text', '')) > 200 else ''}"
@@ -1869,7 +1879,7 @@ def main():
                                 )
                                 st.divider()
                         # Remove button
-                        if st.button("🗑️ Remove from list", key=f"remove_{idx}",
+                        if st.button("ðŸ—‘ï¸ Remove from list", key=f"remove_{idx}",
                                      use_container_width=False):
                             st.session_state["fetched_papers"] = [
                                 p for i, p in enumerate(fetched) if i != idx
@@ -1882,10 +1892,10 @@ def main():
                     with col_btn:
                         if already_evaluated:
                             r = single_results[paper_key]
-                            score_color = "🟢" if r.avg_score >= 7 else "🟡" if r.avg_score >= 4 else "🔴"
+                            score_color = "ðŸŸ¢" if r.avg_score >= 7 else "ðŸŸ¡" if r.avg_score >= 4 else "ðŸ”´"
                             st.markdown(f"{score_color} **{r.avg_score}/10**")
                         else:
-                            if st.button("🔬 Evaluate", key=f"eval_{idx}",
+                            if st.button("ðŸ”¬ Evaluate", key=f"eval_{idx}",
                                          use_container_width=True):
                                 if not effective_api_key:
                                     st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
@@ -1896,13 +1906,13 @@ def main():
                                             client=eval_client, model_name=model_name)
                                         result = eval_engine.run_debate_live(paper, stored_problem)
                                     except LLMQuotaExhaustedError as e:
-                                        st.error(f"🚫 {e}")
+                                        st.error(f"ðŸš« {e}")
                                         result = DebateResult(
                                             paper=paper,
                                             combined_verdict=str(e),
                                             avg_score=0.0,
                                         )
-                                    except Exception as e:
+                                    except (RuntimeError, ValueError, TypeError, OSError) as e:
                                         result = DebateResult(
                                             paper=paper,
                                             combined_verdict=f"Evaluation failed: {e}",
@@ -1939,17 +1949,17 @@ def main():
                     with st.expander("Show Abstract"):
                         st.write(paper.abstract)
                     if paper.url:
-                        st.link_button("📄 Open Paper", paper.url)
+                        st.link_button("ðŸ“„ Open Paper", paper.url)
 
                     # Show result inline if evaluated
                     if already_evaluated:
                         r = single_results[paper_key]
-                        with st.expander(f"📊 Debate Result — {r.avg_score}/10"):
+                        with st.expander(f"ðŸ“Š Debate Result â€” {r.avg_score}/10"):
                             _render_debate_detail(r)
 
                     st.divider()
 
-        # ── Display Results ──
+        # â”€â”€ Display Results â”€â”€
         if "results" in st.session_state:
             results = st.session_state["results"]
             ms = st.session_state.get("min_score", min_score)
@@ -1966,15 +1976,15 @@ def main():
 
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Total Papers", len(results))
-            m2.metric("🟢 Highly Relevant (7-10)", len(high))
-            m3.metric("🟡 Moderate (4-6)", len(mid))
-            m4.metric("🔴 Low Relevance (1-3)", len(low))
+            m2.metric("ðŸŸ¢ Highly Relevant (7-10)", len(high))
+            m3.metric("ðŸŸ¡ Moderate (4-6)", len(mid))
+            m4.metric("ðŸ”´ Low Relevance (1-3)", len(low))
 
             if match_count:
-                st.info(f"🔄 **{match_count}** paper(s) were previously evaluated (highlighted in orange).")
+                st.info(f"ðŸ”„ **{match_count}** paper(s) were previously evaluated (highlighted in orange).")
 
             tab_all, tab_top, tab_debate = st.tabs([
-                "📋 All Results", "⭐ Top Matches", "🗣️ Debate Details"
+                "ðŸ“‹ All Results", "â­ Top Matches", "ðŸ—£ï¸ Debate Details"
             ])
 
             with tab_all:
@@ -1983,14 +1993,14 @@ def main():
             with tab_top:
                 top_results = [r for r in results if r.avg_score >= ms]
                 if not top_results:
-                    st.info(f"No papers scored ≥ {ms}. Try lowering the threshold.")
+                    st.info(f"No papers scored â‰¥ {ms}. Try lowering the threshold.")
                 _render_results_list(top_results, show_top_badge=True, key_prefix="top",
                                      past_matches=results_past_matches)
 
             with tab_debate:
                 st.info("Expand any paper to see the full debate transcript and all 5 judge scores.")
                 for r in results:
-                    icon = '🟢' if r.avg_score >= 7 else '🟡' if r.avg_score >= 4 else '🔴'
+                    icon = 'ðŸŸ¢' if r.avg_score >= 7 else 'ðŸŸ¡' if r.avg_score >= 4 else 'ðŸ”´'
                     with st.expander(f"{icon} [{r.avg_score}/10] {r.paper.title}"):
                         _render_debate_detail(r)
 
@@ -1998,12 +2008,12 @@ def main():
             st.divider()
             export_data = _build_export(results)
             st.download_button(
-                "📥 Download Results (JSON)",
+                "ðŸ“¥ Download Results (JSON)",
                 data=json.dumps(export_data, indent=2),
                 file_name="arxiv_paper_matches.json",
                 mime="application/json",
             )
-            if st.button("📤 Post Results to kackers.app", key="post_results_manual"):
+            if st.button("ðŸ“¤ Post Results to kackers.app", key="post_results_manual"):
                 if not webhook_url.strip():
                     st.warning("Set the Post output URL in the sidebar first.")
                 else:
@@ -2017,21 +2027,21 @@ def main():
                         token=webhook_token,
                     )
                     if ok:
-                        st.success(f"📤 {msg}")
+                        st.success(f"ðŸ“¤ {msg}")
                     else:
-                        st.warning(f"📤 {msg}")
+                        st.warning(f"ðŸ“¤ {msg}")
 
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # RECURRING EVALUATIONS TAB
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     with page_recurring:
-        st.subheader("⏰ Recurring Evaluations")
+        st.subheader("â° Recurring Evaluations")
         st.caption(
             "Runs once per day at the configured time (server local time). "
             "Due jobs run when this app is active."
         )
 
-        # ── Background task status panel ──
+        # â”€â”€ Background task status panel â”€â”€
         bg_tasks: dict = st.session_state.get("_bg_tasks", {})
         if bg_tasks:
             active = {tid: t for tid, t in bg_tasks.items()
@@ -2042,13 +2052,13 @@ def main():
                             if t["status"] == "failed"}
 
             if active:
-                st.info(f"⏳ **{len(active)} evaluation(s) running in background** — tabs remain accessible.")
+                st.info(f"â³ **{len(active)} evaluation(s) running in background** â€” tabs remain accessible.")
                 for t in active.values():
                     stage_map = {
-                        "fetching": "📡 Fetching papers from arXiv…",
-                        "evaluating": "🔬 Running multi-agent debate…",
-                        "saving": "💾 Saving to database…",
-                        "syncing": "☁️ Syncing to cloud…",
+                        "fetching": "ðŸ“¡ Fetching papers from arXivâ€¦",
+                        "evaluating": "ðŸ”¬ Running multi-agent debateâ€¦",
+                        "saving": "ðŸ’¾ Saving to databaseâ€¦",
+                        "syncing": "â˜ï¸ Syncing to cloudâ€¦",
                     }
                     stage_label = stage_map.get(t.get("stage", ""), t.get("stage", ""))
                     done_p = t.get("done_papers") or t.get("done", 0)
@@ -2057,15 +2067,15 @@ def main():
                     started_ts = t.get("started_ts")
                     if started_ts:
                         elapsed_s = max(0, int(datetime.now().timestamp() - started_ts))
-                        elapsed_txt = f" &nbsp;|&nbsp; ⏱️ {elapsed_s}s"
-                    progress_txt = (f" — {done_p}/{total_p} papers"
+                        elapsed_txt = f" &nbsp;|&nbsp; â±ï¸ {elapsed_s}s"
+                    progress_txt = (f" â€” {done_p}/{total_p} papers"
                                     if t.get("stage") == "evaluating" and total_p else "")
                     st.markdown(f"**{t['label']}** &nbsp;|&nbsp; {stage_label}{progress_txt}{elapsed_txt}")
                     if t.get("stage") == "evaluating" and total_p:
                         st.progress(min(done_p / max(total_p, 1), 1.0), text=f"{stage_label} ({done_p}/{total_p})")
                     elif t.get("stage") in {"fetching", "saving", "syncing"}:
                         st.progress(0.0, text=stage_label)
-                st.caption("🔄 Updating every 3 seconds while evaluation is running.")
+                st.caption("ðŸ”„ Updating every 3 seconds while evaluation is running.")
                 time.sleep(3)
                 st.rerun()
 
@@ -2074,20 +2084,20 @@ def main():
                 for t in done_tasks.values():
                     post_note = ""
                     if t.get("post_ok") is True:
-                        post_note = " &nbsp;|&nbsp; 📤 Posted to webhook"
+                        post_note = " &nbsp;|&nbsp; ðŸ“¤ Posted to webhook"
                     elif t.get("post_ok") is False:
-                        post_note = f" &nbsp;|&nbsp; ⚠️ Webhook failed: {t.get('post_msg', '')}"
+                        post_note = f" &nbsp;|&nbsp; âš ï¸ Webhook failed: {t.get('post_msg', '')}"
                     st.success(
-                        f"✅ **{t['label']}** complete — "
+                        f"âœ… **{t['label']}** complete â€” "
                         f"eval #{t.get('eval_id')}, {t.get('result_count', 0)} papers{post_note}"
                     )
 
             if failed_tasks:
                 for t in failed_tasks.values():
-                    st.error(f"❌ **{t['label']}** failed: {t.get('error', 'unknown error')}")
+                    st.error(f"âŒ **{t['label']}** failed: {t.get('error', 'unknown error')}")
 
             if done_tasks or failed_tasks:
-                if st.button("🗑️ Clear completed/failed status", key="clear_bg_tasks"):
+                if st.button("ðŸ—‘ï¸ Clear completed/failed status", key="clear_bg_tasks"):
                     st.session_state["_bg_tasks"] = {
                         tid: t for tid, t in bg_tasks.items()
                         if t["status"] in ("queued", "running")
@@ -2096,7 +2106,7 @@ def main():
 
             st.divider()
 
-        st.markdown("#### ➕ Create Recurring Schedule")
+        st.markdown("#### âž• Create Recurring Schedule")
         with st.form("create_recurring_form"):
             schedule_label = st.text_input(
                 "Schedule label",
@@ -2151,7 +2161,7 @@ def main():
                 value=datetime.now().replace(second=0, microsecond=0).time(),
                 key="rec_run_time",
             )
-            create_schedule = st.form_submit_button("➕ Create Schedule", type="primary")
+            create_schedule = st.form_submit_button("âž• Create Schedule", type="primary")
 
         if create_schedule:
             if not recurring_problem.strip():
@@ -2174,13 +2184,13 @@ def main():
                 st.rerun()
 
         st.divider()
-        st.markdown("#### 📋 Existing Schedules")
+        st.markdown("#### ðŸ“‹ Existing Schedules")
         schedules = load_recurring_schedules()
         if not schedules:
             st.info("No recurring schedules yet. Create one above or from New Evaluation.")
         else:
             for sch in schedules:
-                active_icon = "🟢" if sch.get("is_active") else "⏸️"
+                active_icon = "ðŸŸ¢" if sch.get("is_active") else "â¸ï¸"
                 label = sch.get("label") or f"Schedule #{sch['id']}"
                 freq = (
                     f"Latest {sch.get('max_papers')} papers"
@@ -2188,7 +2198,7 @@ def main():
                     else f"Last {sch.get('days_back')} day(s)"
                 )
                 with st.expander(
-                    f"{active_icon} #{sch['id']} • {label} • {sch['run_time']} daily",
+                    f"{active_icon} #{sch['id']} â€¢ {label} â€¢ {sch['run_time']} daily",
                     expanded=False,
                 ):
                     st.markdown(f"**Model:** {sch.get('model_name')}")
@@ -2204,7 +2214,7 @@ def main():
 
                     a1, a2, a3, a4 = st.columns([1, 1, 1, 1])
                     with a1:
-                        toggle_label = "⏸️ Pause" if sch.get("is_active") else "▶️ Activate"
+                        toggle_label = "â¸ï¸ Pause" if sch.get("is_active") else "â–¶ï¸ Activate"
                         if st.button(toggle_label, key=f"toggle_rec_{sch['id']}", use_container_width=True):
                             set_recurring_schedule_active(sch["id"], not bool(sch.get("is_active")))
                             st.rerun()
@@ -2215,14 +2225,14 @@ def main():
                             if t.get("sch_id") == sch["id"] and t["status"] in ("queued", "running")
                         ]
                         if running_task_ids:
-                            st.button("⏳ Running…", key=f"run_rec_{sch['id']}", disabled=True,
+                            st.button("â³ Runningâ€¦", key=f"run_rec_{sch['id']}", disabled=True,
                                       use_container_width=True)
-                        elif st.button("▶️ Run Now", key=f"run_rec_{sch['id']}", use_container_width=True):
+                        elif st.button("â–¶ï¸ Run Now", key=f"run_rec_{sch['id']}", use_container_width=True):
                             if not effective_api_key:
                                 st.error("No Gemini API key found. Configure GEMINI_API_KEY in Secret Manager.")
                             else:
                                 task_id = f"manual_{sch['id']}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                                st.info(f"🚀 Starting background evaluation for {sch.get('label') or f'Schedule #{sch['id']}'}…")
+                                st.info(f"ðŸš€ Starting background evaluation for {sch.get('label') or f'Schedule #{sch['id']}'}â€¦")
                                 _launch_bg_recurring(
                                     task_id=task_id,
                                     sch=sch,
@@ -2235,19 +2245,19 @@ def main():
                     with a3:
                         edit_key = f"show_edit_{sch['id']}"
                         is_editing = st.session_state.get(edit_key, False)
-                        if st.button("✏️ Edit", key=f"edit_rec_btn_{sch['id']}", use_container_width=True):
+                        if st.button("âœï¸ Edit", key=f"edit_rec_btn_{sch['id']}", use_container_width=True):
                             st.session_state[edit_key] = not is_editing
                             st.rerun()
                     with a4:
-                        if st.button("🗑️ Delete", key=f"del_rec_{sch['id']}", use_container_width=True):
+                        if st.button("ðŸ—‘ï¸ Delete", key=f"del_rec_{sch['id']}", use_container_width=True):
                             delete_recurring_schedule(sch["id"])
                             st.success(f"Deleted schedule #{sch['id']}.")
                             st.rerun()
 
-                    # ── Inline Edit Form ──
+                    # â”€â”€ Inline Edit Form â”€â”€
                     if st.session_state.get(f"show_edit_{sch['id']}", False):
                         st.divider()
-                        st.markdown(f"##### ✏️ Edit Schedule #{sch['id']}")
+                        st.markdown(f"##### âœï¸ Edit Schedule #{sch['id']}")
                         with st.form(f"edit_schedule_form_{sch['id']}"):
                             edit_label = st.text_input("Schedule label", value=sch.get("label", ""))
                             edit_problem = st.text_area("Research problem", value=sch.get("problem_text", ""), height=100)
@@ -2279,12 +2289,12 @@ def main():
                             try:
                                 time_parts = (sch.get("run_time") or "08:00").split(":")
                                 init_time = datetime.now().replace(hour=int(time_parts[0]), minute=int(time_parts[1]), second=0, microsecond=0).time()
-                            except Exception:
+                            except (RuntimeError, ValueError, TypeError, OSError):
                                 init_time = datetime.now().replace(hour=8, minute=0, second=0, microsecond=0).time()
 
                             edit_run_time = st.time_input("Daily run time (server local time)", value=init_time, key=f"edit_time_{sch['id']}")
 
-                            save_edit = st.form_submit_button("💾 Save Changes", type="primary")
+                            save_edit = st.form_submit_button("ðŸ’¾ Save Changes", type="primary")
 
                         if save_edit:
                             if not edit_problem.strip():
@@ -2308,18 +2318,18 @@ def main():
                                 st.rerun()
 
 
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     # PAST EVALUATIONS TAB
-    # ══════════════════════════════════════════════════════════════════════════
+    # â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     with page_history:
-        st.subheader("🗄️ Past Evaluations")
+        st.subheader("ðŸ—„ï¸ Past Evaluations")
 
         all_papers = load_all_papers()
         if not all_papers:
             st.info("No past evaluations yet. Run your first evaluation above!")
         else:
-            # ── Filters ──
-            st.markdown("#### 🔍 Filters")
+            # â”€â”€ Filters â”€â”€
+            st.markdown("#### ðŸ” Filters")
             f1, f2, f3, f4 = st.columns([2, 1, 1, 1])
             with f1:
                 keyword_search = st.text_input(
@@ -2346,7 +2356,7 @@ def main():
             with f4:
                 sort_by = st.selectbox(
                     "Sort by",
-                    ["Score (high → low)", "Score (low → high)",
+                    ["Score (high â†’ low)", "Score (low â†’ high)",
                      "Title (A-Z)", "Date (newest)"],
                     key="hist_sort",
                 )
@@ -2369,31 +2379,31 @@ def main():
                     p for p in filtered
                     if (p.get('eval_date') or 'Unknown')[:10] in date_filter
                 ]
-            if sort_by == "Score (high → low)":
+            if sort_by == "Score (high â†’ low)":
                 filtered.sort(key=lambda p: p['avg_score'] or 0, reverse=True)
-            elif sort_by == "Score (low → high)":
+            elif sort_by == "Score (low â†’ high)":
                 filtered.sort(key=lambda p: p['avg_score'] or 0)
             elif sort_by == "Title (A-Z)":
                 filtered.sort(key=lambda p: (p.get('title') or '').lower())
             else:
                 filtered.sort(key=lambda p: p.get('eval_date') or '', reverse=True)
 
-            # ── Metrics ──
+            # â”€â”€ Metrics â”€â”€
             high = [p for p in filtered if (p['avg_score'] or 0) >= 7]
             mid = [p for p in filtered if 4 <= (p['avg_score'] or 0) < 7]
             low = [p for p in filtered if (p['avg_score'] or 0) < 4]
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Showing", len(filtered))
-            m2.metric("🟢 High (7-10)", len(high))
-            m3.metric("🟡 Moderate (4-6)", len(mid))
-            m4.metric("🔴 Low (1-3)", len(low))
+            m2.metric("ðŸŸ¢ High (7-10)", len(high))
+            m3.metric("ðŸŸ¡ Moderate (4-6)", len(mid))
+            m4.metric("ðŸ”´ Low (1-3)", len(low))
 
-            # ── Table view ──
+            # â”€â”€ Table view â”€â”€
             st.divider()
             table_data = []
             for p in filtered:
                 score = p['avg_score'] or 0
-                relevance = "🟢 High" if score >= 7 else "🟡 Moderate" if score >= 4 else "🔴 Low"
+                relevance = "ðŸŸ¢ High" if score >= 7 else "ðŸŸ¡ Moderate" if score >= 4 else "ðŸ”´ Low"
                 table_data.append({
                     "Score": score,
                     "Relevance": relevance,
@@ -2419,12 +2429,12 @@ def main():
                     key="hist_table",
                 )
 
-                # ── Delete selected rows ──
+                # â”€â”€ Delete selected rows â”€â”€
                 selected_rows = event.selection.rows if event.selection else []
                 if selected_rows:
                     selected_paper_ids = [table_data[i]["_id"] for i in selected_rows]
                     st.caption(f"{len(selected_rows)} paper(s) selected")
-                    if st.button(f"🗑️ Delete {len(selected_rows)} selected paper(s)",
+                    if st.button(f"ðŸ—‘ï¸ Delete {len(selected_rows)} selected paper(s)",
                                  key="del_selected", type="secondary"):
                         st.session_state["confirm_del_papers"] = selected_paper_ids
 
@@ -2433,19 +2443,19 @@ def main():
                     st.warning(f"Delete {len(ids_to_del)} paper(s) and all their data?")
                     c_yes, c_no = st.columns(2)
                     with c_yes:
-                        if st.button("✅ Yes, delete", key="confirm_yes_papers",
+                        if st.button("âœ… Yes, delete", key="confirm_yes_papers",
                                      type="primary", use_container_width=True):
                             delete_papers(ids_to_del)
                             st.session_state.pop("confirm_del_papers", None)
                             st.success("Papers deleted.")
                             st.rerun()
                     with c_no:
-                        if st.button("❌ Cancel", key="confirm_no_papers",
+                        if st.button("âŒ Cancel", key="confirm_no_papers",
                                      use_container_width=True):
                             st.session_state.pop("confirm_del_papers", None)
                             st.rerun()
 
-                # ── Detail view for selected paper ──
+                # â”€â”€ Detail view for selected paper â”€â”€
                 st.divider()
                 if selected_rows:
                     for row_idx in selected_rows:
@@ -2463,7 +2473,7 @@ def main():
                             f"<div class='paper-card'>"
                             f"<span class='{score_class}'>{score}/10</span>"
                             f"&nbsp;&nbsp;<strong>{p['Title']}</strong><br/>"
-                            f"<small>👤 {p['Authors']} &nbsp;|&nbsp; 📅 {p['Published']}"
+                            f"<small>ðŸ‘¤ {p['Authors']} &nbsp;|&nbsp; ðŸ“… {p['Published']}"
                             f" &nbsp;|&nbsp; Eval: {p['Eval Date']}"
                             f" &nbsp;|&nbsp; Model: {p['Model']}</small>"
                             f"</div>",
@@ -2473,10 +2483,10 @@ def main():
                         # Abstract and paper link
                         st.write(paper_row.get('abstract', ''))
                         if paper_row.get('url'):
-                            st.link_button("📄 Open Paper", paper_row['url'])
+                            st.link_button("ðŸ“„ Open Paper", paper_row['url'])
 
                         # Research problem
-                        with st.expander("📝 Research Problem"):
+                        with st.expander("ðŸ“ Research Problem"):
                             st.write(paper_row.get('problem_text', ''))
 
                         # Judge panel chips
@@ -2502,11 +2512,11 @@ def main():
                             # Pick the verdict closest to the average score
                             best_v = min(verdicts, key=lambda v: abs(v['relevance_score'] - score))
                             best_reasons = json.loads(best_v['key_reasons']) if best_v['key_reasons'] else []
-                            col_a, col_b = st.columns([3, 1])
+                            col_a, _col_b = st.columns([3, 1])
                             with col_a:
                                 st.markdown(f"**Verdict:** {best_v['verdict']}")
                                 if best_reasons:
-                                    st.markdown("**Key Reasons:** " + " • ".join(best_reasons))
+                                    st.markdown("**Key Reasons:** " + " â€¢ ".join(best_reasons))
                                 if best_v['suggested_use']:
                                     st.markdown(f"**Suggested Use:** {best_v['suggested_use']}")
 
@@ -2514,35 +2524,35 @@ def main():
                         rounds_db = load_paper_debates(pid)
                         if rounds_db:
                             for rnd in rounds_db:
-                                with st.chat_message("user", avatar="🟢"):
+                                with st.chat_message("user", avatar="ðŸŸ¢"):
                                     st.markdown(f"**Advocate** (Round {rnd['round_num']})")
                                     st.write(rnd['advocate_arg'])
-                                with st.chat_message("user", avatar="🔴"):
+                                with st.chat_message("user", avatar="ðŸ”´"):
                                     st.markdown(f"**Skeptic** (Round {rnd['round_num']})")
                                     st.write(rnd['skeptic_arg'])
 
                         # All 5 judge verdicts
                         if verdicts:
                             for v in verdicts:
-                                v_icon = "🟢" if v['relevance_score'] >= 7 else "🟡" if v['relevance_score'] >= 4 else "🔴"
+                                v_icon = "ðŸŸ¢" if v['relevance_score'] >= 7 else "ðŸŸ¡" if v['relevance_score'] >= 4 else "ðŸ”´"
                                 reasons = json.loads(v['key_reasons']) if v['key_reasons'] else []
-                                with st.chat_message("user", avatar="⚖️"):
+                                with st.chat_message("user", avatar="âš–ï¸"):
                                     st.markdown(
-                                        f"**Judge {v['judge_run']}** (seed {v['seed']}) — "
+                                        f"**Judge {v['judge_run']}** (seed {v['seed']}) â€” "
                                         f"Score: **{v_icon} {v['relevance_score']}/10**"
                                     )
                                     if v['verdict']:
                                         st.write(v['verdict'])
                                     if reasons:
-                                        st.caption("Reasons: " + " • ".join(reasons))
+                                        st.caption("Reasons: " + " â€¢ ".join(reasons))
                                     if v['suggested_use']:
                                         st.caption(f"Suggested use: {v['suggested_use']}")
 
                             # Final decision
                             st.markdown(
-                                f"### 🏆 Final Decision: **{score}/10**\n\n"
+                                f"### ðŸ† Final Decision: **{score}/10**\n\n"
                                 f"**Verdict:** {best_v['verdict']}\n\n"
-                                + (f"**Key Reasons:** {' • '.join(best_reasons)}\n\n" if best_reasons else "")
+                                + (f"**Key Reasons:** {' â€¢ '.join(best_reasons)}\n\n" if best_reasons else "")
                                 + (f"**Suggested Use:** {best_v['suggested_use']}" if best_v['suggested_use'] else "")
                             )
 
@@ -2550,15 +2560,15 @@ def main():
                 else:
                     st.info("Select a row in the table above to view its full debate and verdicts.")
 
-            # ── Delete entire evaluation ──
+            # â”€â”€ Delete entire evaluation â”€â”€
             st.divider()
             evals = load_past_evaluations()
             if evals:
-                st.markdown("#### 🗑️ Manage Evaluations")
+                st.markdown("#### ðŸ—‘ï¸ Manage Evaluations")
                 eval_options = {
                     ev['id']: (
-                        f"#{ev['id']}  •  📅 {ev['created_at']}  •  "
-                        f"{ev['paper_count']} papers  •  {ev['model_name']}"
+                        f"#{ev['id']}  â€¢  ðŸ“… {ev['created_at']}  â€¢  "
+                        f"{ev['paper_count']} papers  â€¢  {ev['model_name']}"
                     )
                     for ev in evals
                 }
@@ -2568,7 +2578,7 @@ def main():
                     format_func=lambda x: eval_options[x],
                     key="del_eval_select",
                 )
-                if st.button("🗑️ Delete Entire Evaluation", key="del_eval",
+                if st.button("ðŸ—‘ï¸ Delete Entire Evaluation", key="del_eval",
                              type="secondary"):
                     st.session_state["confirm_del_eval"] = del_eval_id
 
@@ -2577,14 +2587,14 @@ def main():
                     st.warning(f"Delete evaluation #{eid} and all its papers?")
                     c_yes, c_no = st.columns(2)
                     with c_yes:
-                        if st.button("✅ Yes, delete evaluation", key="confirm_yes_eval",
+                        if st.button("âœ… Yes, delete evaluation", key="confirm_yes_eval",
                                      type="primary", use_container_width=True):
                             delete_evaluation(eid)
                             st.session_state.pop("confirm_del_eval", None)
                             st.success("Evaluation deleted.")
                             st.rerun()
                     with c_no:
-                        if st.button("❌ Cancel", key="confirm_no_eval",
+                        if st.button("âŒ Cancel", key="confirm_no_eval",
                                      use_container_width=True):
                             st.session_state.pop("confirm_del_eval", None)
                             st.rerun()
@@ -2592,3 +2602,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
