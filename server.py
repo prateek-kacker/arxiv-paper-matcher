@@ -52,6 +52,10 @@ from core_engine import (
     _run_evaluation_headless,
     DB_GCS_BUCKET,
     AWS_S3_BUCKET,
+    STORE_GCS_URI,
+    STORE_S3_URI,
+    EVALRUN_GCS_URI_PREFIX,
+    EVALRUN_S3_URI_PREFIX,
 )
 
 app = FastAPI(title="arXiv CS.CL Paper Matcher", version="2.0.0")
@@ -96,6 +100,10 @@ async def get_config():
         "has_api_key": bool(api_key),
         "gcs_bucket": DB_GCS_BUCKET,
         "s3_bucket": AWS_S3_BUCKET,
+        "store_gcs_uri": STORE_GCS_URI,
+        "store_s3_uri": STORE_S3_URI,
+        "evalrun_gcs_prefix": EVALRUN_GCS_URI_PREFIX,
+        "evalrun_s3_prefix": EVALRUN_S3_URI_PREFIX,
         "webhook_url": os.environ.get("KACKERS_POST_URL", "").strip(),
         "auto_post": os.environ.get("AUTO_POST_RESULTS", "false").strip().lower() == "true",
     }
@@ -106,6 +114,13 @@ async def cloud_sync_status():
     return {
         "gcs_bucket": DB_GCS_BUCKET,
         "s3_bucket": AWS_S3_BUCKET,
+        "store_gcs_uri": STORE_GCS_URI,
+        "store_s3_uri": STORE_S3_URI,
+        "evalrun_gcs_prefix": EVALRUN_GCS_URI_PREFIX,
+        "evalrun_s3_prefix": EVALRUN_S3_URI_PREFIX,
+        "store_path": str(core.DB_PATH),
+        "store_exists": core.DB_PATH.exists(),
+        # Backward-compatible fields retained for existing clients.
         "db_path": str(core.DB_PATH),
         "db_exists": core.DB_PATH.exists(),
     }

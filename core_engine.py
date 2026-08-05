@@ -1,7 +1,7 @@
 """
 arXiv CS.CL Paper Matcher — Core Engine
 ========================================
-Core data models, SQLite persistence, Cloud Storage (GCS/S3) sync, arXiv API fetcher,
+Core data models, bucket-backed JSON persistence, Cloud Storage (GCS/S3) sync, arXiv API fetcher,
 and Multi-Agent Debate Engine with 5-Judge Panel.
 """
 
@@ -9,7 +9,6 @@ import os
 import json
 import asyncio
 import random
-import sqlite3
 import threading
 import time
 import concurrent.futures
@@ -28,41 +27,188 @@ from google.cloud import storage
 # Database & Cloud Sync Settings
 # ──────────────────────────────────────────────────────────────────────────────
 
-DB_PATH = Path(os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher.db")))
-DB_GCS_BUCKET = os.environ.get("PAPER_MATCHER_DB_BUCKET", "").strip()
-DB_GCS_BLOB = os.environ.get("PAPER_MATCHER_DB_BLOB", "paper_matcher.db").strip() or "paper_matcher.db"
-AWS_S3_BUCKET = os.environ.get("AWS_S3_BUCKET", "").strip()
-AWS_S3_KEY = os.environ.get("AWS_S3_KEY", "paper_matcher.db").strip() or "paper_matcher.db"
-PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "240"))
-SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("SQLITE_BUSY_TIMEOUT_MS", "30000"))
-_DB_SYNC_LOCK = threading.Lock()
-
-
-def _db_sidecar_paths() -> list[Path]:
-    """Return SQLite sidecar file paths for WAL mode."""
-    return [
-        Path(str(DB_PATH) + "-wal"),
-        Path(str(DB_PATH) + "-shm"),
-    ]
-
-
-def _checkpoint_db():
-    """Flush WAL pages into the main DB file before uploading."""
-    conn = sqlite3.connect(
-        str(DB_PATH),
-        check_same_thread=False,
-        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
+# Keep DB_PATH name for compatibility with server status endpoint/tests.
+DB_PATH = Path(
+    os.environ.get(
+        "PAPER_MATCHER_STORE_PATH",
+        os.environ.get("PAPER_MATCHER_DB_PATH", str(Path(__file__).parent / "paper_matcher_store.json")),
     )
-    try:
-        conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-        # PASSIVE reduces lock contention during frequent web requests.
-        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-    finally:
-        conn.close()
+)
+
+
+def _parse_gs_uri(uri: str) -> tuple[str, str]:
+    raw = (uri or "").strip()
+    if not raw.startswith("gs://"):
+        return "", ""
+    body = raw[5:]
+    if "/" in body:
+        bucket, blob = body.split("/", 1)
+    else:
+        bucket, blob = body, ""
+    return bucket.strip(), blob.strip()
+
+
+def _parse_s3_uri(uri: str) -> tuple[str, str]:
+    raw = (uri or "").strip()
+    if not raw.startswith("s3://"):
+        return "", ""
+    body = raw[5:]
+    if "/" in body:
+        bucket, key = body.split("/", 1)
+    else:
+        bucket, key = body, ""
+    return bucket.strip(), key.strip()
+
+
+_store_gcs_uri = os.environ.get("PAPER_MATCHER_STORE_GCS_URI", "").strip()
+_uri_bucket, _uri_blob = _parse_gs_uri(_store_gcs_uri)
+DB_GCS_BUCKET = _uri_bucket or os.environ.get("PAPER_MATCHER_DB_BUCKET", "").strip()
+DB_GCS_BLOB = (
+    _uri_blob
+    or os.environ.get("PAPER_MATCHER_DB_BLOB", "archive-paper-matcher/store/paper_matcher_store.json").strip()
+    or "archive-paper-matcher/store/paper_matcher_store.json"
+)
+
+_store_s3_uri = os.environ.get("PAPER_MATCHER_STORE_S3_URI", "").strip()
+_s3_uri_bucket, _s3_uri_key = _parse_s3_uri(_store_s3_uri)
+AWS_S3_BUCKET = _s3_uri_bucket or os.environ.get("AWS_S3_BUCKET", "").strip()
+AWS_S3_KEY = (
+    _s3_uri_key
+    or os.environ.get("AWS_S3_KEY", "archive-paper-matcher/store/paper_matcher_store.json").strip()
+    or "archive-paper-matcher/store/paper_matcher_store.json"
+)
+
+EVALRUN_GCS_PREFIX = (
+    os.environ.get("PAPER_MATCHER_EVALRUN_GCS_PREFIX", "archive-paper-matcher/evalruns/").strip()
+    or "archive-paper-matcher/evalruns/"
+)
+EVALRUN_S3_PREFIX = (
+    os.environ.get("PAPER_MATCHER_EVALRUN_S3_PREFIX", "archive-paper-matcher/evalruns/").strip()
+    or "archive-paper-matcher/evalruns/"
+)
+STORE_GCS_URI = f"gs://{DB_GCS_BUCKET}/{DB_GCS_BLOB}" if DB_GCS_BUCKET else ""
+STORE_S3_URI = f"s3://{AWS_S3_BUCKET}/{AWS_S3_KEY}" if AWS_S3_BUCKET else ""
+EVALRUN_GCS_URI_PREFIX = f"gs://{DB_GCS_BUCKET}/{EVALRUN_GCS_PREFIX.rstrip('/')}/" if DB_GCS_BUCKET else ""
+EVALRUN_S3_URI_PREFIX = f"s3://{AWS_S3_BUCKET}/{EVALRUN_S3_PREFIX.rstrip('/')}/" if AWS_S3_BUCKET else ""
+PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "240"))
+_DB_SYNC_LOCK = threading.Lock()
+_STORE_LOCK = threading.RLock()
+
+
+def _empty_store() -> dict:
+    return {
+        "meta": {
+            "next_ids": {
+                "evaluations": 1,
+                "papers": 1,
+                "debate_rounds": 1,
+                "judge_verdicts": 1,
+                "recurring_schedules": 1,
+                "acl_papers": 1,
+            }
+        },
+        "evaluations": [],
+        "papers": [],
+        "debate_rounds": [],
+        "judge_verdicts": [],
+        "recurring_schedules": [],
+        "acl_papers": [],
+    }
+
+
+_STORE: dict = _empty_store()
+
+
+def _ensure_store_schema(store: dict):
+    store.setdefault("meta", {})
+    store.setdefault("evaluations", [])
+    store.setdefault("papers", [])
+    store.setdefault("debate_rounds", [])
+    store.setdefault("judge_verdicts", [])
+    store.setdefault("recurring_schedules", [])
+    store.setdefault("acl_papers", [])
+    next_ids = store["meta"].setdefault("next_ids", {})
+    for key in ["evaluations", "papers", "debate_rounds", "judge_verdicts", "recurring_schedules", "acl_papers"]:
+        if key not in next_ids:
+            max_id = max((int(item.get("id", 0)) for item in store.get(key, [])), default=0)
+            next_ids[key] = max_id + 1
+
+
+def _atomic_write_store(path: Path, payload: dict):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=True)
+    tmp.replace(path)
+
+
+def _save_store_local():
+    _atomic_write_store(DB_PATH, _STORE)
+
+
+def _load_store_local() -> bool:
+    global _STORE
+    if not DB_PATH.exists():
+        return False
+    with DB_PATH.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    _ensure_store_schema(data)
+    _STORE = data
+    return True
+
+
+def _next_id(entity: str) -> int:
+    cur = int(_STORE["meta"]["next_ids"][entity])
+    _STORE["meta"]["next_ids"][entity] = cur + 1
+    return cur
+
+
+def _emit_evalrun_snapshot_to_cloud(eval_id: int):
+    """Upload per-eval immutable snapshot to a unique cloud object key."""
+    with _STORE_LOCK:
+        ev = next((dict(e) for e in _STORE["evaluations"] if int(e.get("id", -1)) == int(eval_id)), None)
+        if not ev:
+            return
+        papers = [dict(p) for p in _STORE["papers"] if int(p.get("evaluation_id", -1)) == int(eval_id)]
+        paper_ids = {int(p["id"]) for p in papers}
+        rounds = [dict(r) for r in _STORE["debate_rounds"] if int(r.get("paper_id", -1)) in paper_ids]
+        verdicts = [dict(v) for v in _STORE["judge_verdicts"] if int(v.get("paper_id", -1)) in paper_ids]
+
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    filename = f"eval_{int(eval_id):06d}_{timestamp}.json"
+    payload = {
+        "evaluation": ev,
+        "papers": papers,
+        "debate_rounds": rounds,
+        "judge_verdicts": verdicts,
+    }
+
+    with _DB_SYNC_LOCK:
+        if DB_GCS_BUCKET:
+            try:
+                client = storage.Client()
+                bucket = client.bucket(DB_GCS_BUCKET)
+                blob = bucket.blob(EVALRUN_GCS_PREFIX.rstrip("/") + "/" + filename)
+                blob.upload_from_string(json.dumps(payload, ensure_ascii=True), content_type="application/json")
+            except Exception:
+                pass
+
+        if AWS_S3_BUCKET:
+            try:
+                import boto3
+                s3 = boto3.client("s3")
+                s3.put_object(
+                    Bucket=AWS_S3_BUCKET,
+                    Key=EVALRUN_S3_PREFIX.rstrip("/") + "/" + filename,
+                    Body=json.dumps(payload, ensure_ascii=True).encode("utf-8"),
+                    ContentType="application/json",
+                )
+            except Exception:
+                pass
 
 
 def sync_db_from_cloud() -> tuple[bool, str]:
-    """Download DB file from Cloud Storage (GCS or AWS S3)."""
+    """Download store file from Cloud Storage (GCS or AWS S3)."""
     if DB_GCS_BUCKET:
         try:
             client = storage.Client()
@@ -71,12 +217,13 @@ def sync_db_from_cloud() -> tuple[bool, str]:
             if blob.exists(client):
                 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
                 blob.download_to_filename(str(DB_PATH))
-                for p in _db_sidecar_paths():
-                    if p.exists():
-                        p.unlink()
-                return True, f"DB downloaded from GCS bucket `{DB_GCS_BUCKET}`"
+                with _STORE_LOCK:
+                    loaded = _load_store_local()
+                if loaded:
+                    return True, f"Store downloaded from GCS bucket `{DB_GCS_BUCKET}`"
+                return False, "Downloaded blob but failed to parse store"
         except Exception as e:
-            return False, f"Failed to load DB from GCS: {e}"
+            return False, f"Failed to load store from GCS: {e}"
 
     if AWS_S3_BUCKET:
         try:
@@ -84,38 +231,34 @@ def sync_db_from_cloud() -> tuple[bool, str]:
             s3 = boto3.client("s3")
             DB_PATH.parent.mkdir(parents=True, exist_ok=True)
             s3.download_file(AWS_S3_BUCKET, AWS_S3_KEY, str(DB_PATH))
-            for p in _db_sidecar_paths():
-                if p.exists():
-                    p.unlink()
-            return True, f"DB downloaded from AWS S3 bucket `{AWS_S3_BUCKET}`"
+            with _STORE_LOCK:
+                loaded = _load_store_local()
+            if loaded:
+                return True, f"Store downloaded from AWS S3 bucket `{AWS_S3_BUCKET}`"
+            return False, "Downloaded blob but failed to parse store"
         except Exception as e:
-            return False, f"Failed to load DB from S3: {e}"
+            return False, f"Failed to load store from S3: {e}"
 
     return False, "Cloud persistence disabled (neither GCS nor S3 bucket set)"
 
 
 def sync_db_to_cloud() -> tuple[bool, str]:
-    """Upload local DB file to Cloud Storage (GCS and/or AWS S3)."""
-    if not DB_PATH.exists():
-        return False, "Local DB file not found"
+    """Upload local store file to Cloud Storage (GCS and/or AWS S3)."""
+    with _STORE_LOCK:
+        _save_store_local()
 
     if not DB_GCS_BUCKET and not AWS_S3_BUCKET:
         return False, "Cloud persistence disabled"
 
     results = []
     with _DB_SYNC_LOCK:
-        try:
-            _checkpoint_db()
-        except Exception as e:
-            # Never fail API writes due to sync checkpoint contention.
-            results.append(f"checkpoint error: {e}")
         if DB_GCS_BUCKET:
             try:
                 client = storage.Client()
                 bucket = client.bucket(DB_GCS_BUCKET)
                 blob = bucket.blob(DB_GCS_BLOB)
                 blob.upload_from_filename(str(DB_PATH))
-                results.append(f"GCS (`{DB_GCS_BUCKET}`)")
+                results.append(f"GCS ({STORE_GCS_URI})")
             except Exception as e:
                 results.append(f"GCS error: {e}")
 
@@ -124,174 +267,124 @@ def sync_db_to_cloud() -> tuple[bool, str]:
                 import boto3
                 s3 = boto3.client("s3")
                 s3.upload_file(str(DB_PATH), AWS_S3_BUCKET, AWS_S3_KEY)
-                results.append(f"S3 (`{AWS_S3_BUCKET}`)")
+                results.append(f"S3 ({STORE_S3_URI})")
             except Exception as e:
                 results.append(f"S3 error: {e}")
 
     return True, f"Uploaded to: {', '.join(results)}"
 
 
-def get_db() -> sqlite3.Connection:
-    """Return a SQLite connection with WAL mode."""
-    conn = sqlite3.connect(
-        str(DB_PATH),
-        check_same_thread=False,
-        timeout=SQLITE_BUSY_TIMEOUT_MS / 1000.0,
-    )
-    conn.row_factory = sqlite3.Row
-    conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
-    return conn
+class _CompatibilityCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def fetchall(self):
+        return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
+
+
+class _CompatibilityConnection:
+    """Compatibility shim for legacy scripts/tests that call get_db()."""
+
+    def execute(self, sql: str, params=None):
+        norm = " ".join(sql.lower().split())
+        if "from metadata_tables" in norm:
+            return _CompatibilityCursor([
+                ("evaluations",),
+                ("papers",),
+                ("debate_rounds",),
+                ("judge_verdicts",),
+                ("recurring_schedules",),
+                ("acl_papers",),
+            ])
+        raise RuntimeError("get_db() SQL compatibility is limited. Use core_engine data APIs instead.")
+
+    def close(self):
+        return None
+
+
+def get_db() -> _CompatibilityConnection:
+    return _CompatibilityConnection()
 
 
 def init_db():
-    """Create tables if they don't exist."""
-    conn = get_db()
-    conn.executescript("""
-        CREATE TABLE IF NOT EXISTS evaluations (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            problem_text    TEXT NOT NULL,
-            model_name      TEXT NOT NULL,
-            status          TEXT DEFAULT 'COMPLETED',
-            total_papers    INTEGER DEFAULT 0,
-            completed_papers INTEGER DEFAULT 0,
-            created_at      TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS papers (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            evaluation_id   INTEGER NOT NULL REFERENCES evaluations(id),
-            title           TEXT NOT NULL,
-            authors         TEXT,
-            abstract        TEXT,
-            url             TEXT,
-            published       TEXT,
-            categories      TEXT,
-            avg_score       REAL DEFAULT 0
-        );
-
-        CREATE TABLE IF NOT EXISTS debate_rounds (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            paper_id        INTEGER NOT NULL REFERENCES papers(id),
-            round_num       INTEGER NOT NULL,
-            advocate_arg    TEXT,
-            skeptic_arg     TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS judge_verdicts (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            paper_id        INTEGER NOT NULL REFERENCES papers(id),
-            judge_run       INTEGER NOT NULL,
-            seed            INTEGER,
-            relevance_score INTEGER,
-            verdict         TEXT,
-            key_reasons     TEXT,
-            suggested_use   TEXT
-        );
-
-        CREATE TABLE IF NOT EXISTS recurring_schedules (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            label           TEXT,
-            problem_text    TEXT NOT NULL,
-            model_name      TEXT NOT NULL,
-            paper_source    TEXT DEFAULT 'arxiv',
-            acl_track       TEXT DEFAULT 'all',
-            fetch_mode      TEXT NOT NULL,
-            max_papers      INTEGER,
-            days_back       INTEGER,
-            keyword_filter  TEXT,
-            min_score       INTEGER DEFAULT 6,
-            max_concurrent  INTEGER DEFAULT 3,
-            run_time        TEXT NOT NULL,
-            is_active       INTEGER DEFAULT 1,
-            last_run_date   TEXT,
-            last_run_at     TEXT,
-            last_status     TEXT,
-            last_message    TEXT,
-            last_eval_id    INTEGER,
-            created_at      TEXT DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS acl_papers (
-            id              INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_year      TEXT NOT NULL,
-            paper_key       TEXT UNIQUE NOT NULL,
-            title           TEXT NOT NULL,
-            authors         TEXT,
-            abstract        TEXT,
-            full_text       TEXT,
-            url             TEXT,
-            pdf_url         TEXT,
-            published       TEXT,
-            created_at      TEXT DEFAULT (datetime('now'))
-        );
-    """)
-    conn.commit()
-
-    # Migration columns for evaluations & recurring_schedules tracking
-    for table, col_def in [
-        ("evaluations", "status TEXT DEFAULT 'COMPLETED'"),
-        ("evaluations", "total_papers INTEGER DEFAULT 0"),
-        ("evaluations", "completed_papers INTEGER DEFAULT 0"),
-        ("recurring_schedules", "paper_source TEXT DEFAULT 'arxiv'"),
-        ("recurring_schedules", "acl_track TEXT DEFAULT 'all'"),
-        ("acl_papers", "full_text TEXT"),
-        ("papers", "full_text TEXT"),
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_def}")
-            conn.commit()
-        except Exception:
-            pass
-
-    conn.close()
+    """Initialize bucket-backed JSON store file if needed."""
+    global _STORE
+    with _STORE_LOCK:
+        if DB_PATH.exists():
+            try:
+                if not _load_store_local():
+                    _STORE = _empty_store()
+                    _ensure_store_schema(_STORE)
+                    _save_store_local()
+                    return
+            except Exception:
+                _STORE = _empty_store()
+                _ensure_store_schema(_STORE)
+                _save_store_local()
+                return
+        else:
+            _STORE = _empty_store()
+        _ensure_store_schema(_STORE)
+        _save_store_local()
 
 
 def save_evaluation(problem: str, model: str, status: str = 'COMPLETED', total: int = 0, sync_cloud: bool = True) -> int:
-    conn = get_db()
-    cur = conn.execute(
-        "INSERT INTO evaluations (problem_text, model_name, status, total_papers, completed_papers) VALUES (?, ?, ?, ?, 0)",
-        (problem, model, status, total),
-    )
-    conn.commit()
-    eval_id = cur.lastrowid
-    conn.close()
+    with _STORE_LOCK:
+        eval_id = _next_id("evaluations")
+        _STORE["evaluations"].append({
+            "id": eval_id,
+            "problem_text": problem,
+            "model_name": model,
+            "status": status,
+            "total_papers": int(total or 0),
+            "completed_papers": 0,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
     return eval_id
 
 
 def update_evaluation_progress(eval_id: int, completed: int, total: Optional[int] = None, status: Optional[str] = None, sync_cloud: bool = True):
-    conn = get_db()
-    updates = ["completed_papers = ?"]
-    params: list = [completed]
-    if total is not None:
-        updates.append("total_papers = ?")
-        params.append(total)
-    if status is not None:
-        updates.append("status = ?")
-        params.append(status)
-    params.append(eval_id)
-    conn.execute(f"UPDATE evaluations SET {', '.join(updates)} WHERE id = ?", params)
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        for ev in _STORE["evaluations"]:
+            if int(ev["id"]) == int(eval_id):
+                ev["completed_papers"] = int(completed)
+                if total is not None:
+                    ev["total_papers"] = int(total)
+                if status is not None:
+                    ev["status"] = status
+                break
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
+        if status in {"COMPLETED", "FAILED"}:
+            _emit_evalrun_snapshot_to_cloud(eval_id)
 
 
 def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool = True) -> int:
-    conn = get_db()
-    cur = conn.execute(
-        """INSERT INTO papers
-           (evaluation_id, title, authors, abstract, full_text, url, published, categories, avg_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (eval_id, paper.title, paper.authors, paper.abstract, paper.full_text,
-         paper.url, paper.published, paper.categories, avg_score),
-    )
-    conn.commit()
-    paper_id = cur.lastrowid
-    conn.close()
+    with _STORE_LOCK:
+        paper_id = _next_id("papers")
+        _STORE["papers"].append({
+            "id": paper_id,
+            "evaluation_id": int(eval_id),
+            "title": paper.title,
+            "authors": paper.authors,
+            "abstract": paper.abstract,
+            "full_text": paper.full_text,
+            "url": paper.url,
+            "published": paper.published,
+            "categories": paper.categories,
+            "avg_score": float(avg_score),
+        })
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
     return paper_id
@@ -304,13 +397,15 @@ def save_debate_round(
     skeptic: str,
     sync_cloud: bool = True,
 ):
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO debate_rounds (paper_id, round_num, advocate_arg, skeptic_arg) VALUES (?, ?, ?, ?)",
-        (paper_id, round_num, advocate, skeptic),
-    )
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        _STORE["debate_rounds"].append({
+            "id": _next_id("debate_rounds"),
+            "paper_id": int(paper_id),
+            "round_num": int(round_num),
+            "advocate_arg": advocate,
+            "skeptic_arg": skeptic,
+        })
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
@@ -318,61 +413,67 @@ def save_debate_round(
 def save_judge_verdict(paper_id: int, run: int, seed: int, score: int,
                        verdict: str, reasons: list[str], suggested: str,
                        sync_cloud: bool = True):
-    conn = get_db()
-    conn.execute(
-        """INSERT INTO judge_verdicts
-           (paper_id, judge_run, seed, relevance_score, verdict, key_reasons, suggested_use)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (paper_id, run, seed, score, verdict, json.dumps(reasons), suggested),
-    )
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        _STORE["judge_verdicts"].append({
+            "id": _next_id("judge_verdicts"),
+            "paper_id": int(paper_id),
+            "judge_run": int(run),
+            "seed": int(seed),
+            "relevance_score": int(score),
+            "verdict": verdict,
+            "key_reasons": list(reasons or []),
+            "suggested_use": suggested,
+        })
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
 
 def load_past_evaluations() -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT e.id, e.problem_text, e.model_name,
-                  COALESCE(e.status, 'COMPLETED') AS status,
-                  COALESCE(e.total_papers, 0) AS total_papers,
-                  COALESCE(e.completed_papers, COUNT(p.id)) AS completed_papers,
-                  e.created_at,
-                  COUNT(p.id) AS paper_count,
-                  ROUND(AVG(p.avg_score), 1) AS overall_avg
-           FROM evaluations e
-           LEFT JOIN papers p ON p.evaluation_id = e.id
-           GROUP BY e.id
-           ORDER BY e.created_at DESC"""
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    with _STORE_LOCK:
+        out: list[dict] = []
+        papers_by_eval: dict[int, list[dict]] = {}
+        for p in _STORE["papers"]:
+            papers_by_eval.setdefault(int(p["evaluation_id"]), []).append(p)
+        for ev in _STORE["evaluations"]:
+            ev_id = int(ev["id"])
+            papers = papers_by_eval.get(ev_id, [])
+            paper_count = len(papers)
+            overall_avg = round(sum(float(p.get("avg_score", 0.0)) for p in papers) / paper_count, 1) if paper_count else None
+            out.append({
+                "id": ev_id,
+                "problem_text": ev.get("problem_text", ""),
+                "model_name": ev.get("model_name", ""),
+                "status": ev.get("status", "COMPLETED"),
+                "total_papers": int(ev.get("total_papers", 0)),
+                "completed_papers": int(ev.get("completed_papers", paper_count)),
+                "created_at": ev.get("created_at", ""),
+                "paper_count": paper_count,
+                "overall_avg": overall_avg,
+            })
+        out.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return out
 
 
 def load_evaluation_papers(eval_id: int) -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM papers WHERE evaluation_id = ? ORDER BY avg_score DESC",
-        (eval_id,),
-    ).fetchall()
-    papers = [dict(r) for r in rows]
-    for p in papers:
-        pid = p["id"]
-        debates = conn.execute("SELECT * FROM debate_rounds WHERE paper_id = ? ORDER BY round_num", (pid,)).fetchall()
-        verdicts = conn.execute("SELECT * FROM judge_verdicts WHERE paper_id = ? ORDER BY judge_run", (pid,)).fetchall()
-        p["debates"] = [dict(d) for d in debates]
-        v_list = []
-        for v in verdicts:
-            vd = dict(v)
-            try:
-                vd["key_reasons"] = json.loads(vd["key_reasons"]) if vd["key_reasons"] else []
-            except Exception:
-                vd["key_reasons"] = []
-            v_list.append(vd)
-        p["verdicts"] = v_list
-    conn.close()
-    return papers
+    with _STORE_LOCK:
+        papers = [dict(p) for p in _STORE["papers"] if int(p.get("evaluation_id", -1)) == int(eval_id)]
+        papers.sort(key=lambda p: float(p.get("avg_score", 0.0)), reverse=True)
+        for p in papers:
+            pid = int(p["id"])
+            debates = [dict(d) for d in _STORE["debate_rounds"] if int(d.get("paper_id", -1)) == pid]
+            debates.sort(key=lambda d: int(d.get("round_num", 0)))
+            verdicts = [dict(v) for v in _STORE["judge_verdicts"] if int(v.get("paper_id", -1)) == pid]
+            verdicts.sort(key=lambda v: int(v.get("judge_run", 0)))
+            for v in verdicts:
+                if not isinstance(v.get("key_reasons"), list):
+                    try:
+                        v["key_reasons"] = json.loads(v.get("key_reasons") or "[]")
+                    except Exception:
+                        v["key_reasons"] = []
+            p["debates"] = debates
+            p["verdicts"] = verdicts
+        return papers
 
 
 def delete_evaluation(eval_id: int, sync_cloud: bool = True):
@@ -382,77 +483,73 @@ def delete_evaluation(eval_id: int, sync_cloud: bool = True):
 def delete_evaluations(eval_ids: list[int], sync_cloud: bool = True):
     if not eval_ids:
         return
-    conn = get_db()
-    placeholders = ",".join("?" for _ in eval_ids)
-    paper_ids = [r['id'] for r in conn.execute(f"SELECT id FROM papers WHERE evaluation_id IN ({placeholders})", eval_ids).fetchall()]
-    if paper_ids:
-        p_placeholders = ",".join("?" for _ in paper_ids)
-        conn.execute(f"DELETE FROM judge_verdicts WHERE paper_id IN ({p_placeholders})", paper_ids)
-        conn.execute(f"DELETE FROM debate_rounds WHERE paper_id IN ({p_placeholders})", paper_ids)
-        conn.execute(f"DELETE FROM papers WHERE id IN ({p_placeholders})", paper_ids)
-    conn.execute(f"DELETE FROM evaluations WHERE id IN ({placeholders})", eval_ids)
-    conn.commit()
-    conn.close()
+    target = {int(i) for i in eval_ids}
+    with _STORE_LOCK:
+        paper_ids = {int(p["id"]) for p in _STORE["papers"] if int(p.get("evaluation_id", -1)) in target}
+        _STORE["judge_verdicts"] = [v for v in _STORE["judge_verdicts"] if int(v.get("paper_id", -1)) not in paper_ids]
+        _STORE["debate_rounds"] = [d for d in _STORE["debate_rounds"] if int(d.get("paper_id", -1)) not in paper_ids]
+        _STORE["papers"] = [p for p in _STORE["papers"] if int(p.get("id", -1)) not in paper_ids]
+        _STORE["evaluations"] = [e for e in _STORE["evaluations"] if int(e.get("id", -1)) not in target]
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
 
 def delete_papers(paper_ids: list[int], sync_cloud: bool = True):
-    conn = get_db()
-    for pid in paper_ids:
-        conn.execute("DELETE FROM judge_verdicts WHERE paper_id = ?", (pid,))
-        conn.execute("DELETE FROM debate_rounds WHERE paper_id = ?", (pid,))
-        conn.execute("DELETE FROM papers WHERE id = ?", (pid,))
-    conn.commit()
-    conn.close()
+    target = {int(i) for i in paper_ids}
+    with _STORE_LOCK:
+        _STORE["judge_verdicts"] = [v for v in _STORE["judge_verdicts"] if int(v.get("paper_id", -1)) not in target]
+        _STORE["debate_rounds"] = [d for d in _STORE["debate_rounds"] if int(d.get("paper_id", -1)) not in target]
+        _STORE["papers"] = [p for p in _STORE["papers"] if int(p.get("id", -1)) not in target]
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
 
 def load_all_papers() -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date
-           FROM papers p
-           JOIN evaluations e ON e.id = p.evaluation_id
-           ORDER BY p.avg_score DESC"""
-    ).fetchall()
-    papers = [dict(r) for r in rows]
-    for p in papers:
-        pid = p["id"]
-        verdicts = conn.execute("SELECT relevance_score, judge_run FROM judge_verdicts WHERE paper_id = ? ORDER BY judge_run", (pid,)).fetchall()
-        p["judge_scores"] = [{"run": v["judge_run"], "score": v["relevance_score"]} for v in verdicts]
-    conn.close()
-    return papers
+    with _STORE_LOCK:
+        eval_by_id = {int(e["id"]): e for e in _STORE["evaluations"]}
+        papers = []
+        for p in _STORE["papers"]:
+            ev = eval_by_id.get(int(p.get("evaluation_id", -1)))
+            if not ev:
+                continue
+            row = dict(p)
+            row["problem_text"] = ev.get("problem_text", "")
+            row["model_name"] = ev.get("model_name", "")
+            row["eval_date"] = ev.get("created_at", "")
+            pid = int(row["id"])
+            verdicts = [v for v in _STORE["judge_verdicts"] if int(v.get("paper_id", -1)) == pid]
+            verdicts.sort(key=lambda v: int(v.get("judge_run", 0)))
+            row["judge_scores"] = [{"run": int(v.get("judge_run", 0)), "score": int(v.get("relevance_score", 0))} for v in verdicts]
+            papers.append(row)
+        papers.sort(key=lambda r: float(r.get("avg_score", 0.0)), reverse=True)
+        return papers
 
 
 def load_paper_detail(paper_id: int) -> dict:
-    conn = get_db()
-    row = conn.execute(
-        """SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date
-           FROM papers p
-           JOIN evaluations e ON e.id = p.evaluation_id
-           WHERE p.id = ?""",
-        (paper_id,)
-    ).fetchone()
-    if not row:
-        conn.close()
-        return {}
-    p = dict(row)
-    debates = conn.execute("SELECT * FROM debate_rounds WHERE paper_id = ? ORDER BY round_num", (paper_id,)).fetchall()
-    verdicts = conn.execute("SELECT * FROM judge_verdicts WHERE paper_id = ? ORDER BY judge_run", (paper_id,)).fetchall()
-    p["debates"] = [dict(d) for d in debates]
-    v_list = []
-    for v in verdicts:
-        vd = dict(v)
-        try:
-            vd["key_reasons"] = json.loads(vd["key_reasons"]) if vd["key_reasons"] else []
-        except Exception:
-            vd["key_reasons"] = []
-        v_list.append(vd)
-    p["verdicts"] = v_list
-    conn.close()
-    return p
+    with _STORE_LOCK:
+        paper = next((dict(p) for p in _STORE["papers"] if int(p.get("id", -1)) == int(paper_id)), None)
+        if not paper:
+            return {}
+        ev = next((e for e in _STORE["evaluations"] if int(e.get("id", -1)) == int(paper.get("evaluation_id", -1))), None)
+        if ev:
+            paper["problem_text"] = ev.get("problem_text", "")
+            paper["model_name"] = ev.get("model_name", "")
+            paper["eval_date"] = ev.get("created_at", "")
+        debates = [dict(d) for d in _STORE["debate_rounds"] if int(d.get("paper_id", -1)) == int(paper_id)]
+        debates.sort(key=lambda d: int(d.get("round_num", 0)))
+        verdicts = [dict(v) for v in _STORE["judge_verdicts"] if int(v.get("paper_id", -1)) == int(paper_id)]
+        verdicts.sort(key=lambda v: int(v.get("judge_run", 0)))
+        for v in verdicts:
+            if not isinstance(v.get("key_reasons"), list):
+                try:
+                    v["key_reasons"] = json.loads(v.get("key_reasons") or "[]")
+                except Exception:
+                    v["key_reasons"] = []
+        paper["debates"] = debates
+        paper["verdicts"] = verdicts
+        return paper
 
 
 def create_recurring_schedule(
@@ -470,20 +567,31 @@ def create_recurring_schedule(
     run_time: str,
     sync_cloud: bool = True,
 ) -> int:
-    conn = get_db()
-    cur = conn.execute(
-        """INSERT INTO recurring_schedules
-           (label, problem_text, model_name, paper_source, acl_track, fetch_mode, max_papers, days_back,
-            keyword_filter, min_score, max_concurrent, run_time)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (
-            label, problem_text, model_name, paper_source, acl_track, fetch_mode, max_papers, days_back,
-            keyword_filter, min_score, max_concurrent, run_time,
-        ),
-    )
-    conn.commit()
-    schedule_id = cur.lastrowid
-    conn.close()
+    with _STORE_LOCK:
+        schedule_id = _next_id("recurring_schedules")
+        _STORE["recurring_schedules"].append({
+            "id": schedule_id,
+            "label": label,
+            "problem_text": problem_text,
+            "model_name": model_name,
+            "paper_source": paper_source,
+            "acl_track": acl_track,
+            "fetch_mode": fetch_mode,
+            "max_papers": max_papers,
+            "days_back": days_back,
+            "keyword_filter": keyword_filter,
+            "min_score": int(min_score),
+            "max_concurrent": int(max_concurrent),
+            "run_time": run_time,
+            "is_active": 1,
+            "last_run_date": None,
+            "last_run_at": None,
+            "last_status": None,
+            "last_message": None,
+            "last_eval_id": None,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
     return schedule_id
@@ -505,49 +613,51 @@ def update_recurring_schedule(
     run_time: str,
     sync_cloud: bool = True,
 ):
-    conn = get_db()
-    conn.execute(
-        """UPDATE recurring_schedules
-           SET label = ?, problem_text = ?, model_name = ?, paper_source = ?, acl_track = ?,
-               fetch_mode = ?, max_papers = ?, days_back = ?, keyword_filter = ?, min_score = ?,
-               max_concurrent = ?, run_time = ?
-           WHERE id = ?""",
-        (
-            label, problem_text, model_name, paper_source, acl_track,
-            fetch_mode, max_papers, days_back, keyword_filter, min_score,
-            max_concurrent, run_time, schedule_id,
-        ),
-    )
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        for s in _STORE["recurring_schedules"]:
+            if int(s.get("id", -1)) == int(schedule_id):
+                s.update({
+                    "label": label,
+                    "problem_text": problem_text,
+                    "model_name": model_name,
+                    "paper_source": paper_source,
+                    "acl_track": acl_track,
+                    "fetch_mode": fetch_mode,
+                    "max_papers": max_papers,
+                    "days_back": days_back,
+                    "keyword_filter": keyword_filter,
+                    "min_score": int(min_score),
+                    "max_concurrent": int(max_concurrent),
+                    "run_time": run_time,
+                })
+                break
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
 
 def load_recurring_schedules() -> list[dict]:
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM recurring_schedules
-           ORDER BY is_active DESC, run_time ASC, id DESC"""
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    with _STORE_LOCK:
+        rows = [dict(s) for s in _STORE["recurring_schedules"]]
+    rows.sort(key=lambda s: (-(int(s.get("is_active", 0))), s.get("run_time", ""), -int(s.get("id", 0))))
+    return rows
 
 
 def set_recurring_schedule_active(schedule_id: int, active: bool, sync_cloud: bool = True):
-    conn = get_db()
-    conn.execute("UPDATE recurring_schedules SET is_active = ? WHERE id = ?", (1 if active else 0, schedule_id))
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        for s in _STORE["recurring_schedules"]:
+            if int(s.get("id", -1)) == int(schedule_id):
+                s["is_active"] = 1 if active else 0
+                break
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
 
 def delete_recurring_schedule(schedule_id: int, sync_cloud: bool = True):
-    conn = get_db()
-    conn.execute("DELETE FROM recurring_schedules WHERE id = ?", (schedule_id,))
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        _STORE["recurring_schedules"] = [s for s in _STORE["recurring_schedules"] if int(s.get("id", -1)) != int(schedule_id)]
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
@@ -560,15 +670,16 @@ def update_schedule_last_run(
     eval_id: Optional[int],
     sync_cloud: bool = True,
 ):
-    conn = get_db()
-    conn.execute(
-        """UPDATE recurring_schedules
-           SET last_run_date = ?, last_run_at = ?, last_status = ?, last_message = ?, last_eval_id = ?
-           WHERE id = ?""",
-        (run_date, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), status, message, eval_id, schedule_id),
-    )
-    conn.commit()
-    conn.close()
+    with _STORE_LOCK:
+        for s in _STORE["recurring_schedules"]:
+            if int(s.get("id", -1)) == int(schedule_id):
+                s["last_run_date"] = run_date
+                s["last_run_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                s["last_status"] = status
+                s["last_message"] = message
+                s["last_eval_id"] = eval_id
+                break
+        _save_store_local()
     if sync_cloud:
         sync_db_to_cloud()
 
@@ -577,35 +688,40 @@ def load_due_recurring_schedules(now: Optional[datetime] = None) -> list[dict]:
     now = now or datetime.now()
     today = now.strftime("%Y-%m-%d")
     now_hhmm = now.strftime("%H:%M")
-    conn = get_db()
-    rows = conn.execute(
-        """SELECT * FROM recurring_schedules
-           WHERE is_active = 1 AND run_time <= ? AND (last_run_date IS NULL OR last_run_date <> ?)
-           ORDER BY run_time ASC""",
-        (now_hhmm, today),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+    with _STORE_LOCK:
+        rows = [
+            dict(s)
+            for s in _STORE["recurring_schedules"]
+            if int(s.get("is_active", 0)) == 1
+            and str(s.get("run_time", "")) <= now_hhmm
+            and (not s.get("last_run_date") or s.get("last_run_date") != today)
+        ]
+    rows.sort(key=lambda s: s.get("run_time", ""))
+    return rows
 
 
 def find_matching_past_papers(urls: list[str]) -> dict[str, list[dict]]:
     if not urls:
         return {}
-    conn = get_db()
-    placeholders = ",".join("?" for _ in urls)
-    rows = conn.execute(
-        f"""SELECT p.*, e.problem_text, e.model_name, e.created_at AS eval_date
-            FROM papers p
-            JOIN evaluations e ON e.id = p.evaluation_id
-            WHERE p.url IN ({placeholders})
-            ORDER BY p.avg_score DESC""",
-        urls,
-    ).fetchall()
-    conn.close()
+    with _STORE_LOCK:
+        url_set = set(urls)
+        eval_by_id = {int(e["id"]): e for e in _STORE["evaluations"]}
+        rows = []
+        for p in _STORE["papers"]:
+            if p.get("url") not in url_set:
+                continue
+            ev = eval_by_id.get(int(p.get("evaluation_id", -1)))
+            if not ev:
+                continue
+            d = dict(p)
+            d["problem_text"] = ev.get("problem_text", "")
+            d["model_name"] = ev.get("model_name", "")
+            d["eval_date"] = ev.get("created_at", "")
+            rows.append(d)
+    rows.sort(key=lambda x: float(x.get("avg_score", 0.0)), reverse=True)
     matches: dict[str, list[dict]] = {}
-    for r in rows:
-        d = dict(r)
-        matches.setdefault(d['url'], []).append(d)
+    for d in rows:
+        matches.setdefault(d["url"], []).append(d)
     return matches
 
 
@@ -720,53 +836,59 @@ def fetch_acl_papers(
 ) -> list[Paper]:
     """
     Fetches ACL 2026 Papers filtered by track/volume (Long, Short, Findings, Demos, SRW, Industry, Workshops, All).
-    Caches extracted papers in SQLite database and syncs to Google Cloud Storage.
+    Loads cached ACL papers from the bucket-backed JSON store.
     """
-    conn = get_db()
-    query_sql = "SELECT * FROM acl_papers WHERE event_year = '2026'"
-    params: list = []
+    with _STORE_LOCK:
+        rows = [dict(r) for r in _STORE.get("acl_papers", []) if str(r.get("event_year", "")) == "2026"]
 
-    if volume_filter == "acl-long":
-        query_sql += " AND paper_key LIKE '%.acl-long.%'"
-    elif volume_filter == "findings-acl":
-        query_sql += " AND paper_key LIKE '%.findings-acl.%'"
-    elif volume_filter == "acl-short":
-        query_sql += " AND paper_key LIKE '%.acl-short.%'"
-    elif volume_filter == "acl-industry":
-        query_sql += " AND paper_key LIKE '%.acl-industry.%'"
-    elif volume_filter == "acl-demo":
-        query_sql += " AND (paper_key LIKE '%.acl-demo.%' OR paper_key LIKE '%.acl-demos.%')"
-    elif volume_filter == "acl-srw":
-        query_sql += " AND paper_key LIKE '%.acl-srw.%'"
-    elif volume_filter == "workshops":
-        query_sql += """ AND paper_key NOT LIKE '%.acl-long.%'
-                         AND paper_key NOT LIKE '%.findings-acl.%'
-                         AND paper_key NOT LIKE '%.acl-short.%'
-                         AND paper_key NOT LIKE '%.acl-industry.%'
-                         AND paper_key NOT LIKE '%.acl-demo.%'
-                         AND paper_key NOT LIKE '%.acl-demos.%'
-                         AND paper_key NOT LIKE '%.acl-srw.%'"""
+    def _track_match(paper_key: str) -> bool:
+        k = (paper_key or "").lower()
+        if volume_filter == "acl-long":
+            return ".acl-long." in k
+        if volume_filter == "findings-acl":
+            return ".findings-acl." in k
+        if volume_filter == "acl-short":
+            return ".acl-short." in k
+        if volume_filter == "acl-industry":
+            return ".acl-industry." in k
+        if volume_filter == "acl-demo":
+            return ".acl-demo." in k or ".acl-demos." in k
+        if volume_filter == "acl-srw":
+            return ".acl-srw." in k
+        if volume_filter == "workshops":
+            blocked = [
+                ".acl-long.",
+                ".findings-acl.",
+                ".acl-short.",
+                ".acl-industry.",
+                ".acl-demo.",
+                ".acl-demos.",
+                ".acl-srw.",
+            ]
+            return not any(x in k for x in blocked)
+        return True
+
+    rows = [r for r in rows if _track_match(str(r.get("paper_key", "")))]
 
     if search_query and search_query.strip():
-        query_sql += " AND (title LIKE ? OR abstract LIKE ?)"
-        q = f"%{search_query.strip()}%"
-        params.extend([q, q])
+        q = search_query.strip().lower()
+        rows = [
+            r for r in rows
+            if q in str(r.get("title", "")).lower() or q in str(r.get("abstract", "")).lower()
+        ]
 
     if max_results and max_results > 0:
-        query_sql += " LIMIT ?"
-        params.append(max_results)
-
-    rows = conn.execute(query_sql, params).fetchall()
+        rows = rows[: int(max_results)]
 
     paper_objs = []
     for r in rows:
-        title = r["title"]
-        authors = r["authors"] or "ACL 2026 Authors"
-        abstract = r["abstract"] or title
-        full_text = dict(r).get("full_text")
-        p_url = r["url"]
-        pdf_url = r["pdf_url"]
-        published = r["published"] or "2026-08"
+        title = str(r.get("title", "Untitled ACL paper"))
+        authors = str(r.get("authors") or "ACL 2026 Authors")
+        abstract = str(r.get("abstract") or title)
+        full_text = r.get("full_text")
+        p_url = str(r.get("url", ""))
+        pdf_url = str(r.get("pdf_url", ""))
+        published = str(r.get("published") or "2026-08")
 
         paper_objs.append(Paper(
             title=title,
@@ -777,8 +899,6 @@ def fetch_acl_papers(
             categories="ACL-2026",
             full_text=full_text,
         ))
-
-    conn.close()
     return paper_objs
 
 

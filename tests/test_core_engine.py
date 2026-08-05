@@ -3,6 +3,7 @@ Unit tests for core_engine.py (Database, Persistence, Schedules, Filtering, and 
 """
 
 import os
+import json
 import pytest
 from datetime import datetime, timedelta
 import core_engine as core
@@ -11,12 +12,22 @@ from core_engine import Paper
 
 def test_init_db(temp_db_env):
     """Test that init_db creates all required tables cleanly."""
-    conn = core.get_db()
-    tables = [row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")]
-    conn.close()
-    
+    with open(core.DB_PATH, "r", encoding="utf-8") as f:
+        store = json.load(f)
+
+    tables = [
+        "evaluations",
+        "papers",
+        "debate_rounds",
+        "judge_verdicts",
+        "recurring_schedules",
+        "acl_papers",
+    ]
+
     expected = {"evaluations", "papers", "debate_rounds", "judge_verdicts", "recurring_schedules"}
     assert expected.issubset(set(tables))
+    for k in expected:
+        assert k in store
 
 
 def test_evaluation_crud(temp_db_env):
