@@ -717,6 +717,61 @@ def load_due_recurring_schedules(now: Optional[datetime] = None) -> list[dict]:
     return rows
 
 
+def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", location: str = "us-central1") -> dict:
+    """
+    Queries state of GCP Cloud Scheduler job via gcloud CLI.
+    Returns status dict with state ('PAUSED', 'ENABLED', or 'UNKNOWN').
+    """
+    import subprocess
+    import json
+    try:
+        cmd = [
+            "gcloud", "scheduler", "jobs", "describe", job_name,
+            f"--location={location}", "--format=json"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, shell=True)
+        if res.returncode == 0 and res.stdout:
+            data = json.loads(res.stdout)
+            state = data.get("state", "UNKNOWN")
+            last_attempt = data.get("lastAttemptTime")
+            return {
+                "job_name": job_name,
+                "state": state,
+                "location": location,
+                "last_attempt": last_attempt,
+                "error": None
+            }
+    except Exception as e:
+        pass
+    return {
+        "job_name": job_name,
+        "state": "UNKNOWN",
+        "location": location,
+        "last_attempt": None,
+        "error": "Could not fetch GCP Cloud Scheduler status"
+    }
+
+
+def toggle_gcp_scheduler(active: bool, job_name: str = "hourly-paper-matcher-eval", location: str = "us-central1") -> dict:
+    """
+    Resumes or pauses GCP Cloud Scheduler job via gcloud CLI.
+    """
+    import subprocess
+    action = "resume" if active else "pause"
+    try:
+        cmd = [
+            "gcloud", "scheduler", "jobs", action, job_name,
+            f"--location={location}", "--quiet"
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, shell=True)
+        if res.returncode == 0:
+            return {"success": True, "state": "ENABLED" if active else "PAUSED"}
+        else:
+            return {"success": False, "error": res.stderr.strip() or f"Failed to {action} scheduler job"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 def find_matching_past_papers(urls: list[str]) -> dict[str, list[dict]]:
     if not urls:
         return {}

@@ -42,6 +42,8 @@ from core_engine import (
     set_recurring_schedule_active,
     delete_recurring_schedule,
     update_schedule_last_run,
+    get_gcp_scheduler_status,
+    toggle_gcp_scheduler,
     find_matching_past_papers,
     fetch_arxiv_papers,
     fetch_acl_papers,
@@ -573,7 +575,22 @@ async def run_background_eval_task(
 
 @app.get("/api/schedules")
 async def get_schedules():
-    return {"schedules": load_recurring_schedules()}
+    return {
+        "schedules": load_recurring_schedules(),
+        "cloud_scheduler": get_gcp_scheduler_status()
+    }
+
+
+@app.post("/api/schedules/cloud-scheduler/toggle")
+async def toggle_cloud_scheduler_route(req: dict):
+    active = bool(req.get("active", True))
+    result = toggle_gcp_scheduler(active)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed to update GCP Cloud Scheduler status"))
+    return {
+        "success": True,
+        "cloud_scheduler": get_gcp_scheduler_status()
+    }
 
 
 @app.post("/api/schedules")
@@ -593,7 +610,9 @@ async def add_schedule(req: dict):
         max_concurrent=int(req.get("max_concurrent", 3)),
         run_time=req.get("run_time", "08:00"),
     )
-    return {"success": True, "schedule_id": schedule_id}
+    # Automatically ensure GCP Cloud Scheduler is active when creating a schedule
+    toggle_gcp_scheduler(True)
+    return {"success": True, "schedule_id": schedule_id, "cloud_scheduler": get_gcp_scheduler_status()}
 
 
 @app.put("/api/schedules/{schedule_id}")
@@ -621,7 +640,21 @@ async def edit_schedule(schedule_id: int, req: dict):
 async def toggle_schedule(schedule_id: int, req: dict):
     active = bool(req.get("active", True))
     set_recurring_schedule_active(schedule_id, active)
-    return {"success": True, "active": active}
+    
+    # Sync GCP Cloud Scheduler: if active, ensure Cloud Scheduler is resumed.
+    # If all schedules are inactive, pause Cloud Scheduler.
+    all_schedules = load_recurring_schedules()
+    any_active = any(s.get("is_active", 0) == 1 for s in all_schedules)
+    if active or any_active:
+        toggle_gcp_scheduler(True)
+    else:
+        toggle_gcp_scheduler(False)
+
+    return {
+        "success": True,
+        "active": active,
+        "cloud_scheduler": get_gcp_scheduler_status()
+    }
 
 
 @app.delete("/api/schedules/{schedule_id}")

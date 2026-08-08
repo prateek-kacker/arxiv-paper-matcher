@@ -1062,11 +1062,84 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await fetch('/api/schedules');
         const data = await res.json();
         this.currentSchedules = data.schedules || [];
+        this.cloudScheduler = data.cloud_scheduler || null;
         this.renderSchedules();
       } catch (e) { console.error('Schedules error:', e); }
     },
 
     renderSchedules() {
+      // 1. Render GCP Cloud Scheduler Banner
+      const banner = document.getElementById('cloud-scheduler-banner');
+      if (banner) {
+        banner.innerHTML = '';
+        if (this.cloudScheduler) {
+          const cs = this.cloudScheduler;
+          const isPaused = cs.state === 'PAUSED';
+          const isEnabled = cs.state === 'ENABLED';
+
+          const card = document.createElement('div');
+          card.className = 'card';
+          if (isPaused) {
+            card.style.cssText = 'background:var(--color-surface);border:2px solid var(--color-accent);border-left:6px solid var(--color-accent);padding:14px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px';
+            card.innerHTML = `
+              <div>
+                <div style="font-weight:800;font-size:14px;color:var(--color-accent-700)">
+                  ⚠️ GCP Cloud Scheduler is PAUSED (${cs.job_name || 'hourly-paper-matcher-eval'})
+                </div>
+                <div style="font-size:12px;opacity:.75;margin-top:2px">
+                  Daily recurring paper matching triggers are suspended on Cloud Run.
+                </div>
+              </div>
+              <button id="btn-toggle-cloud-scheduler" class="btn btn-primary" style="white-space:nowrap">
+                ▶️ Resume Cloud Scheduler
+              </button>
+            `;
+          } else if (isEnabled) {
+            card.style.cssText = 'background:var(--color-surface);border:1px solid var(--color-divider);border-left:6px solid oklch(42% 0.15 155);padding:12px 18px;display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px';
+            card.innerHTML = `
+              <div>
+                <div style="font-weight:800;font-size:14px;color:oklch(42% 0.15 155)">
+                  🟢 GCP Cloud Scheduler is ACTIVE (Hourly trigger)
+                </div>
+                <div style="font-size:12px;opacity:.75;margin-top:2px">
+                  Job: ${cs.job_name} | Location: ${cs.location}
+                </div>
+              </div>
+              <button id="btn-toggle-cloud-scheduler" class="btn btn-secondary" style="white-space:nowrap">
+                ⏸️ Pause Cloud Scheduler
+              </button>
+            `;
+          }
+          if (isPaused || isEnabled) {
+            banner.appendChild(card);
+            const toggleBtn = card.querySelector('#btn-toggle-cloud-scheduler');
+            if (toggleBtn) {
+              toggleBtn.addEventListener('click', async () => {
+                const targetState = isPaused; // resume if paused, pause if enabled
+                try {
+                  toggleBtn.disabled = true;
+                  toggleBtn.textContent = 'Updating...';
+                  const res = await fetch('/api/schedules/cloud-scheduler/toggle', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ active: targetState }),
+                  });
+                  const data = await res.json().catch(() => ({}));
+                  if (!res.ok || !data.success) {
+                    throw new Error(data.detail || data.error || 'Failed to update Cloud Scheduler');
+                  }
+                  await this.loadSchedules();
+                } catch (err) {
+                  alert(`Cloud Scheduler error: ${err.message}`);
+                  await this.loadSchedules();
+                }
+              });
+            }
+          }
+        }
+      }
+
+      // 2. Render Existing Schedules List
       const container = document.getElementById('schedules-list');
       container.innerHTML = '';
 
@@ -1075,8 +1148,13 @@ document.addEventListener('DOMContentLoaded', () => {
         return;
       }
 
+      const csPaused = this.cloudScheduler && this.cloudScheduler.state === 'PAUSED';
+
       this.currentSchedules.forEach(s => {
-        const statusDot = s.is_active ? '🟢' : '⚪';
+        const statusDot = s.is_active ? (csPaused ? '🟡' : '🟢') : '⚪';
+        const pausedBadge = (s.is_active && csPaused)
+          ? `<span style="font-size:11px;font-weight:700;padding:2px 6px;background:var(--color-accent);color:#fff;border-radius:4px;margin-left:6px">⚠️ Trigger Suspended (Scheduler Paused)</span>`
+          : '';
         const sourceLabel = (s.paper_source === 'acl')
           ? `ACL 2026 (${(s.acl_track || 'all').toUpperCase()} Track)`
           : 'arXiv CS.CL';
@@ -1090,7 +1168,7 @@ document.addEventListener('DOMContentLoaded', () => {
         card.innerHTML = `
           <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
             <div>
-              <div style="font-weight:800;font-size:15px">${statusDot} #${s.id} · ${s.label || `Schedule #${s.id}`} · ⏰ ${s.run_time} daily</div>
+              <div style="font-weight:800;font-size:15px">${statusDot} #${s.id} · ${s.label || `Schedule #${s.id}`} · ⏰ ${s.run_time} daily ${pausedBadge}</div>
               <div style="font-size:12px;opacity:.65;margin-top:2px">
                 📚 <strong>Source:</strong> ${sourceLabel} | 📦 <strong>Fetch:</strong> ${fetchLabel}${kwLabel} | ⚙️ <strong>Model:</strong> ${s.model_name}
               </div>

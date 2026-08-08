@@ -95,6 +95,25 @@ def test_schedules_api_workflow(api_client):
     assert len(api_client.get("/api/schedules").json()["schedules"]) == 0
 
 
+def test_cloud_scheduler_api_endpoint(api_client, monkeypatch):
+    """Test GET /api/schedules cloud_scheduler metadata and toggle endpoint."""
+    res = api_client.get("/api/schedules")
+    assert res.status_code == 200
+    data = res.json()
+    assert "cloud_scheduler" in data
+    assert "job_name" in data["cloud_scheduler"]
+
+    # Mock toggle_gcp_scheduler in server module
+    monkeypatch.setattr(server, "toggle_gcp_scheduler", lambda active: {"success": True, "state": "ENABLED" if active else "PAUSED"})
+    monkeypatch.setattr(server, "get_gcp_scheduler_status", lambda: {"job_name": "hourly-paper-matcher-eval", "state": "ENABLED", "location": "us-central1"})
+
+    toggle_res = api_client.post("/api/schedules/cloud-scheduler/toggle", json={"active": True})
+    assert toggle_res.status_code == 200
+    assert toggle_res.json()["success"] is True
+    assert toggle_res.json()["cloud_scheduler"]["state"] == "ENABLED"
+
+
+
 def test_papers_and_evaluations_api_workflow(api_client):
     """Test REST APIs for evaluations and paper records."""
     # Insert evaluation & paper into temp DB
