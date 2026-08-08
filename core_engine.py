@@ -1211,6 +1211,7 @@ def _run_evaluation_headless(
 
     _cb("evaluating", 0, len(papers))
     eval_id = save_evaluation(problem_statement, model_name, sync_cloud=False)
+    update_evaluation_progress(eval_id, completed=0, total=len(papers), status="RUNNING", sync_cloud=False)
     results: list[DebateResult] = []
     completed = 0
     _lock = threading.Lock()
@@ -1231,6 +1232,7 @@ def _run_evaluation_headless(
             results.append(future.result())
             with _lock:
                 completed += 1
+            update_evaluation_progress(eval_id, completed=completed, total=len(papers), status="RUNNING", sync_cloud=False)
             _cb("evaluating", completed, len(papers))
 
     _cb("saving", 0, len(results))
@@ -1241,6 +1243,7 @@ def _run_evaluation_headless(
         for jv in r.judge_verdicts:
             save_judge_verdict(paper_id, jv.run, jv.seed, jv.relevance_score, jv.verdict, jv.key_reasons, jv.suggested_use, sync_cloud=False)
 
+    update_evaluation_progress(eval_id, completed=len(results), total=len(papers), status="COMPLETED", sync_cloud=True)
     _cb("syncing", 0, 0)
     sync_db_to_cloud()
     results.sort(key=lambda r: r.avg_score, reverse=True)

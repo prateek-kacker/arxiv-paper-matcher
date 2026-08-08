@@ -68,6 +68,7 @@ gcloud run deploy "${SERVICE_NAME}" \
     --platform=managed \
     --allow-unauthenticated \
     --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=${REGION}" \
+    --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
     --memory=2Gi \
     --cpu=2 \
     --project="${PROJECT_ID}"

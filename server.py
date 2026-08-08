@@ -663,6 +663,20 @@ async def remove_schedule(schedule_id: int):
     return {"success": True}
 
 
+def resolve_gemini_api_key(provided_key: Optional[str] = None) -> str:
+    key = (provided_key or "").strip() or os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        try:
+            from google.cloud import secretmanager
+            proj = os.environ.get("GCP_PROJECT_ID", "gen-lang-client-0096294200")
+            client = secretmanager.SecretManagerServiceClient()
+            secret_name = f"projects/{proj}/secrets/GEMINI_API_KEY/versions/latest"
+            key = client.access_secret_version(request={"name": secret_name}).payload.data.decode("UTF-8").strip()
+        except Exception:
+            pass
+    return key
+
+
 @app.post("/api/schedules/{schedule_id}/run")
 async def trigger_schedule_run(schedule_id: int, background_tasks: BackgroundTasks):
     schedules = load_recurring_schedules()
@@ -670,7 +684,7 @@ async def trigger_schedule_run(schedule_id: int, background_tasks: BackgroundTas
     if not target:
         raise HTTPException(status_code=404, detail="Schedule not found.")
 
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    api_key = resolve_gemini_api_key()
     if not api_key:
         raise HTTPException(status_code=400, detail="GEMINI_API_KEY environment variable is not configured.")
 
@@ -680,6 +694,8 @@ async def trigger_schedule_run(schedule_id: int, background_tasks: BackgroundTas
             api_key=api_key,
             problem_statement=target["problem_text"],
             model_name=target["model_name"],
+            paper_source=target.get("paper_source") or "arxiv",
+            acl_track=target.get("acl_track") or "all",
             max_papers=target.get("max_papers"),
             days_back=target.get("days_back"),
             keyword_filter=target.get("keyword_filter") or "",
