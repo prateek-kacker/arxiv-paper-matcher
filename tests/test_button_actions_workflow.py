@@ -34,7 +34,7 @@ def test_background_evaluation_button_workflow(api_client, monkeypatch):
     )
     mock_result = DebateResult(paper=sample_paper, combined_verdict="Highly relevant agentic system.", avg_score=9.0)
 
-    monkeypatch.setattr(server, "resolve_gemini_api_key", lambda: "fake-api-key")
+    monkeypatch.setattr(server, "resolve_gemini_api_key", lambda *args, **kwargs: "fake-api-key")
     monkeypatch.setattr(core, "_run_evaluation_headless", lambda **kwargs: (101, [mock_result], None))
 
     payload = {
