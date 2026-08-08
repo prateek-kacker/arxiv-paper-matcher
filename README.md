@@ -94,6 +94,7 @@ Evaluations can be executed interactively in real time with live streaming updat
 
 ### ⏰ Automated Schedules & Webhooks
 - **Recurring Schedule Manager**: Automate daily or weekly paper matching jobs with 1:1 configuration parameter sync directly from the evaluation form.
+- **GCP Cloud Scheduler Live Status & Controls**: Real-time detection and 1:1 bidirectional sync with GCP Cloud Scheduler (`hourly-paper-matcher-eval`). Features a prominent UI health banner (`🟢 ACTIVE` / `⚠️ PAUSED`) and direct one-click **Resume / Pause Cloud Scheduler** controls.
 - **Headless Batch Runner**: CLI utility (`batch_runner.py`) for headless execution on GCP Cloud Run Jobs, Kubernetes CronJobs, or local crontab.
 - **Webhook Alerts**: Automatically POST structured JSON evaluation summaries to custom HTTP webhooks (`KACKERS_POST_URL`).
 
@@ -223,8 +224,8 @@ This script automatically:
 1. Enables required GCP APIs (Cloud Run, Cloud Scheduler, Cloud Build, Artifact Registry, GCS).
 2. Provisions a Google Cloud Storage bucket for `paper_matcher.db` persistence.
 3. Builds and pushes the Docker container to Artifact Registry.
-4. Deploys the FastAPI server to **GCP Cloud Run**.
-5. Sets up a **Cloud Run Job** and **Cloud Scheduler** job for automated hourly batch runs.
+4. Deploys the FastAPI server to **GCP Cloud Run** (Live URL: [https://archive-paper-matcher-gr6ge7htzq-uc.a.run.app](https://archive-paper-matcher-gr6ge7htzq-uc.a.run.app)).
+5. Sets up a **Cloud Run Job** (`archive-paper-matcher-job`) and **Cloud Scheduler** job (`hourly-paper-matcher-eval`) with automatic 1:1 status synchronization and web UI controls via `/api/schedules/cloud-scheduler/toggle`.
 
 ---
 
