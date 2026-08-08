@@ -396,8 +396,8 @@ async def api_evaluate_stream(request: Request):
 
 
 @app.post("/api/evaluate/background")
-async def api_evaluate_background(data: dict, background_tasks: BackgroundTasks):
-    api_key = os.environ.get("GEMINI_API_KEY", "").strip() or data.get("api_key", "").strip()
+async def evaluate_background(data: dict, background_tasks: BackgroundTasks):
+    api_key = resolve_gemini_api_key(data.get("api_key"))
     problem_statement = data.get("problem_statement", "").strip()
     model_name = data.get("model_name", "gemini-2.5-flash")
     paper_source = data.get("paper_source", "arxiv")

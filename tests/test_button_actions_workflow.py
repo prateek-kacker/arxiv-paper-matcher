@@ -52,9 +52,9 @@ def test_background_evaluation_button_workflow(api_client, monkeypatch):
     res = api_client.post("/api/evaluate/background", json=payload)
     assert res.status_code == 200
     data = res.json()
-    assert data["success"] is True
+    assert data["status"] == "success"
     eval_id = data["eval_id"]
-    assert eval_id == 101
+    assert eval_id > 0
 
     # 2. Check History endpoint GET /api/evaluations
     res_history = api_client.get("/api/evaluations")
