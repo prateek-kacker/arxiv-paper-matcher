@@ -819,6 +819,9 @@ async def resume_evaluation_route(eval_id: int, background_tasks: BackgroundTask
     if not api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
 
+    if core.DB_GCS_BUCKET or core.AWS_S3_BUCKET:
+        await asyncio.to_thread(sync_db_from_cloud)
+
     evaluations = load_past_evaluations()
     target = next((e for e in evaluations if int(e.get("id", -1)) == int(eval_id)), None)
     if not target:
