@@ -748,6 +748,7 @@ def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", locati
     Returns status dict with state ('PAUSED', 'ENABLED', or 'UNKNOWN').
     """
     project_id = os.environ.get("GCP_PROJECT_ID", os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200"))).strip()
+    err_msg = ""
     try:
         import google.auth
         import google.auth.transport.requests
@@ -766,8 +767,8 @@ def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", locati
                 "last_attempt": data.get("lastAttemptTime"),
                 "error": None,
             }
-    except Exception:
-        pass
+    except Exception as e:
+        err_msg = f"REST Error: {e}"
 
     import subprocess
     try:
@@ -787,15 +788,17 @@ def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", locati
                 "last_attempt": last_attempt,
                 "error": None,
             }
-    except Exception:
-        pass
+        elif res.stderr:
+            err_msg += f" | CLI Error: {res.stderr.strip()}"
+    except Exception as e:
+        err_msg += f" | CLI Exec Error: {e}"
 
     return {
         "job_name": job_name,
         "state": "UNKNOWN",
         "location": location,
         "last_attempt": None,
-        "error": "Could not fetch GCP Cloud Scheduler status",
+        "error": f"Could not fetch GCP Cloud Scheduler status ({err_msg})",
     }
 
 
