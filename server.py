@@ -810,8 +810,11 @@ async def get_evaluation_detail(eval_id: int):
 
 
 @app.post("/api/evaluations/{eval_id}/resume")
-async def resume_evaluation_route(eval_id: int, background_tasks: BackgroundTasks, data: Optional[dict] = None):
-    data = data or {}
+async def resume_evaluation_route(eval_id: int, background_tasks: BackgroundTasks, request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
     api_key = resolve_gemini_api_key(data.get("api_key"))
     if not api_key:
         raise HTTPException(status_code=400, detail="Gemini API key is required.")
