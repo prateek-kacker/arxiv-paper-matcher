@@ -1832,10 +1832,7 @@ document.addEventListener('DOMContentLoaded', () => {
           ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">PARTIAL (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
           : `<span class="badge" style="background:var(--color-emerald-500);color:#fff;font-weight:700;padding:3px 8px;border-radius:12px">✅ COMPLETED</span>`;
 
-        const canResume = isRunning || isPartial || (ev.total_papers && (ev.completed_papers || ev.paper_count || 0) < ev.total_papers);
-        const resumeBtnHtml = canResume
-          ? `<button class="btn btn-secondary btn-resume-eval" data-id="${ev.id}" style="margin-right:6px">▶️ Resume</button>`
-          : '';
+        const resumeBtnHtml = `<button class="btn btn-secondary btn-resume-eval" data-id="${ev.id}" style="margin-right:6px">▶️ Resume / Re-run</button>`;
 
         const card = document.createElement('div');
         card.className = 'card';
@@ -1875,7 +1872,29 @@ document.addEventListener('DOMContentLoaded', () => {
           this.updateBulkActionButtonsForRuns();
         });
       });
-      this.updateBulkActionButtonsForRuns();
+      // Bind Resume / Re-run buttons
+      container.querySelectorAll('.btn-resume-eval').forEach(b => {
+        b.addEventListener('click', async (e) => {
+          const id = parseInt(e.target.getAttribute('data-id'));
+          const btn = e.target;
+          try {
+            btn.disabled = true;
+            btn.textContent = 'Resuming...';
+            const res = await fetch(`/api/evaluations/${id}/resume`, { method: 'POST' });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok || !data.status) {
+              throw new Error(data.detail || data.error || 'Failed to resume evaluation');
+            }
+            alert(`🚀 Evaluation #${id} resumed!\n\n${data.message || 'Resumed evaluation run.'}`);
+            this.loadHistory();
+          } catch (err) {
+            alert(`Failed to resume evaluation #${id}: ${err.message}`);
+          } finally {
+            btn.disabled = false;
+            btn.textContent = '▶️ Resume / Re-run';
+          }
+        });
+      });
 
       // Bind delete buttons
       container.querySelectorAll('.btn-del-eval').forEach(b => b.addEventListener('click', async e => {
