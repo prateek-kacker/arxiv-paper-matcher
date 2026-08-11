@@ -90,7 +90,7 @@ STORE_GCS_URI = f"gs://{DB_GCS_BUCKET}/{DB_GCS_BLOB}" if DB_GCS_BUCKET else ""
 STORE_S3_URI = f"s3://{AWS_S3_BUCKET}/{AWS_S3_KEY}" if AWS_S3_BUCKET else ""
 EVALRUN_GCS_URI_PREFIX = f"gs://{DB_GCS_BUCKET}/{EVALRUN_GCS_PREFIX.rstrip('/')}/" if DB_GCS_BUCKET else ""
 EVALRUN_S3_URI_PREFIX = f"s3://{AWS_S3_BUCKET}/{EVALRUN_S3_PREFIX.rstrip('/')}/" if AWS_S3_BUCKET else ""
-PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "240"))
+PAPER_EVAL_TIMEOUT_SECONDS = int(os.environ.get("PAPER_EVAL_TIMEOUT_SECONDS", "600"))
 _DB_SYNC_LOCK = threading.Lock()
 _STORE_LOCK = threading.RLock()
 
@@ -134,6 +134,10 @@ def _ensure_store_schema(store: dict):
             next_ids[key] = max_id + 1
 
 
+def ensure_store_schema(store: dict) -> None:
+    _ensure_store_schema(store)
+
+
 def _atomic_write_store(path: Path, payload: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -144,6 +148,13 @@ def _atomic_write_store(path: Path, payload: dict):
 
 def _save_store_local():
     _atomic_write_store(DB_PATH, _STORE)
+
+
+def publish_local_store(store: dict) -> None:
+    global _STORE
+    with _STORE_LOCK:
+        _STORE = store
+        _save_store_local()
 
 
 def _load_store_local() -> bool:
@@ -211,13 +222,15 @@ def sync_db_from_cloud() -> tuple[bool, str]:
     """Download store file from Cloud Storage (GCS or AWS S3)."""
     if DB_GCS_BUCKET:
         try:
-            client = storage.Client()
-            bucket = client.bucket(DB_GCS_BUCKET)
-            blob = bucket.blob(DB_GCS_BLOB)
-            if blob.exists(client):
+            with _DB_SYNC_LOCK:
+                client = storage.Client()
+                bucket = client.bucket(DB_GCS_BUCKET)
+                blob = bucket.blob(DB_GCS_BLOB)
+                if not blob.exists(client):
+                    return False, f"Store does not exist in GCS bucket `{DB_GCS_BUCKET}`"
                 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-                blob.download_to_filename(str(DB_PATH))
                 with _STORE_LOCK:
+                    blob.download_to_filename(str(DB_PATH))
                     loaded = _load_store_local()
                 if loaded:
                     return True, f"Store downloaded from GCS bucket `{DB_GCS_BUCKET}`"
@@ -227,12 +240,13 @@ def sync_db_from_cloud() -> tuple[bool, str]:
 
     if AWS_S3_BUCKET:
         try:
-            import boto3
-            s3 = boto3.client("s3")
-            DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-            s3.download_file(AWS_S3_BUCKET, AWS_S3_KEY, str(DB_PATH))
-            with _STORE_LOCK:
-                loaded = _load_store_local()
+            with _DB_SYNC_LOCK:
+                import boto3
+                s3 = boto3.client("s3")
+                DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with _STORE_LOCK:
+                    s3.download_file(AWS_S3_BUCKET, AWS_S3_KEY, str(DB_PATH))
+                    loaded = _load_store_local()
             if loaded:
                 return True, f"Store downloaded from AWS S3 bucket `{AWS_S3_BUCKET}`"
             return False, "Downloaded blob but failed to parse store"
@@ -386,7 +400,15 @@ def load_evaluation_paper_urls(eval_id: int) -> set[str]:
         }
 
 
-def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool = True) -> int:
+def save_paper(
+    eval_id: int,
+    paper: "Paper",
+    avg_score: float,
+    sync_cloud: bool = True,
+    generation_status: str = "COMPLETED",
+    generation_stage: str = "Completed",
+    generation_message: str = "",
+) -> int:
     with _STORE_LOCK:
         paper_id = _next_id("papers")
         _STORE["papers"].append({
@@ -400,6 +422,9 @@ def save_paper(eval_id: int, paper: "Paper", avg_score: float, sync_cloud: bool 
             "published": paper.published,
             "categories": paper.categories,
             "avg_score": float(avg_score),
+            "generation_status": generation_status,
+            "generation_stage": generation_stage,
+            "generation_message": generation_message,
         })
         _save_store_local()
     if sync_cloud:
@@ -719,11 +744,32 @@ def load_due_recurring_schedules(now: Optional[datetime] = None) -> list[dict]:
 
 def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", location: str = "us-central1") -> dict:
     """
-    Queries state of GCP Cloud Scheduler job via gcloud CLI.
+    Queries state of GCP Cloud Scheduler job via Google REST API (or gcloud CLI fallback).
     Returns status dict with state ('PAUSED', 'ENABLED', or 'UNKNOWN').
     """
+    project_id = os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200")).strip()
+    try:
+        import google.auth
+        import google.auth.transport.requests
+        from urllib import request as urllib_req
+
+        creds, _ = google.auth.default()
+        creds.refresh(google.auth.transport.requests.Request())
+        url = f"https://cloudscheduler.googleapis.com/v1/projects/{project_id}/locations/{location}/jobs/{job_name}"
+        req = urllib_req.Request(url, headers={"Authorization": f"Bearer {creds.token}"})
+        with urllib_req.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            return {
+                "job_name": job_name,
+                "state": data.get("state", "UNKNOWN"),
+                "location": location,
+                "last_attempt": data.get("lastAttemptTime"),
+                "error": None,
+            }
+    except Exception:
+        pass
+
     import subprocess
-    import json
     try:
         cmd = [
             "gcloud", "scheduler", "jobs", "describe", job_name,
@@ -739,25 +785,42 @@ def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", locati
                 "state": state,
                 "location": location,
                 "last_attempt": last_attempt,
-                "error": None
+                "error": None,
             }
-    except Exception as e:
+    except Exception:
         pass
+
     return {
         "job_name": job_name,
         "state": "UNKNOWN",
         "location": location,
         "last_attempt": None,
-        "error": "Could not fetch GCP Cloud Scheduler status"
+        "error": "Could not fetch GCP Cloud Scheduler status",
     }
 
 
 def toggle_gcp_scheduler(active: bool, job_name: str = "hourly-paper-matcher-eval", location: str = "us-central1") -> dict:
     """
-    Resumes or pauses GCP Cloud Scheduler job via gcloud CLI.
+    Resumes or pauses GCP Cloud Scheduler job via Google REST API (or gcloud CLI fallback).
     """
-    import subprocess
+    project_id = os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200")).strip()
     action = "resume" if active else "pause"
+    try:
+        import google.auth
+        import google.auth.transport.requests
+        from urllib import request as urllib_req
+
+        creds, _ = google.auth.default()
+        creds.refresh(google.auth.transport.requests.Request())
+        url = f"https://cloudscheduler.googleapis.com/v1/projects/{project_id}/locations/{location}/jobs/{job_name}:{action}"
+        req = urllib_req.Request(url, data=b"", headers={"Authorization": f"Bearer {creds.token}"}, method="POST")
+        with urllib_req.urlopen(req, timeout=8) as resp:
+            if resp.status == 200:
+                return {"success": True, "state": "ENABLED" if active else "PAUSED"}
+    except Exception:
+        pass
+
+    import subprocess
     try:
         cmd = [
             "gcloud", "scheduler", "jobs", action, job_name,
@@ -841,6 +904,9 @@ class DebateResult:
     combined_verdict: str = ""
     combined_reasons: list[str] = field(default_factory=list)
     combined_suggested_use: str = ""
+    generation_status: str = "COMPLETED"
+    generation_stage: str = "Completed"
+    generation_message: str = ""
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1217,14 +1283,41 @@ def _run_evaluation_headless(
     _lock = threading.Lock()
 
     def _evaluate(paper: Paper) -> DebateResult:
+        last_stage = "Starting Gemini evaluation"
+
+        def _paper_status(stage: str):
+            nonlocal last_stage
+            last_stage = stage
+
         try:
             c = genai.Client(api_key=api_key)
             eng = DebateEngine(client=c, model_name=model_name)
-            return asyncio.run(asyncio.wait_for(eng.run_debate(paper, problem_statement), timeout=max(PAPER_EVAL_TIMEOUT_SECONDS, 30)))
+            result = asyncio.run(asyncio.wait_for(
+                eng.run_debate(paper, problem_statement, status_callback=_paper_status),
+                timeout=max(PAPER_EVAL_TIMEOUT_SECONDS, 30),
+            ))
+            result.generation_stage = "Completed"
+            return result
         except TimeoutError:
-            return DebateResult(paper=paper, combined_verdict="Evaluation timed out.", avg_score=0.0)
+            message = f"Gemini timed out after {PAPER_EVAL_TIMEOUT_SECONDS} seconds during: {last_stage}"
+            return DebateResult(
+                paper=paper,
+                combined_verdict=message,
+                avg_score=0.0,
+                generation_status="TIMED_OUT",
+                generation_stage=last_stage,
+                generation_message=message,
+            )
         except Exception as exc:
-            return DebateResult(paper=paper, combined_verdict=f"Evaluation failed: {exc}", avg_score=0.0)
+            message = f"Evaluation failed during {last_stage}: {exc}"
+            return DebateResult(
+                paper=paper,
+                combined_verdict=message,
+                avg_score=0.0,
+                generation_status="FAILED",
+                generation_stage=last_stage,
+                generation_message=message,
+            )
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrent) as executor:
         futures = {executor.submit(_evaluate, p): p for p in papers}
@@ -1237,14 +1330,26 @@ def _run_evaluation_headless(
 
     _cb("saving", 0, len(results))
     for r in results:
-        paper_id = save_paper(eval_id, r.paper, r.avg_score, sync_cloud=False)
+        paper_id = save_paper(
+            eval_id,
+            r.paper,
+            r.avg_score,
+            sync_cloud=False,
+            generation_status=r.generation_status,
+            generation_stage=r.generation_stage,
+            generation_message=r.generation_message,
+        )
         for idx, rnd in enumerate(r.rounds, 1):
             save_debate_round(paper_id, idx, rnd.advocate_argument, rnd.skeptic_argument, sync_cloud=False)
         for jv in r.judge_verdicts:
             save_judge_verdict(paper_id, jv.run, jv.seed, jv.relevance_score, jv.verdict, jv.key_reasons, jv.suggested_use, sync_cloud=False)
 
-    update_evaluation_progress(eval_id, completed=len(results), total=len(papers), status="COMPLETED", sync_cloud=True)
+    successful_results = [r for r in results if r.generation_status == "COMPLETED"]
+    final_status = "COMPLETED" if successful_results else "FAILED"
+    update_evaluation_progress(eval_id, completed=len(results), total=len(papers), status=final_status, sync_cloud=True)
     _cb("syncing", 0, 0)
     sync_db_to_cloud()
     results.sort(key=lambda r: r.avg_score, reverse=True)
+    if not successful_results:
+        return eval_id, results, "All paper evaluations failed or timed out."
     return eval_id, results, None
