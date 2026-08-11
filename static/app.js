@@ -1192,16 +1192,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
       container.querySelectorAll('.btn-run-sch').forEach(b => b.addEventListener('click', async e => {
         const id = e.target.getAttribute('data-id');
+        const btn = e.target;
         try {
+          btn.disabled = true;
+          btn.textContent = 'Launching...';
           const res = await fetch(`/api/schedules/${id}/run`, { method: 'POST' });
           const data = await res.json().catch(() => ({}));
           if (!res.ok || !data.success) {
             throw new Error(data.detail || data.error || 'Failed to trigger schedule run');
           }
-          alert(`Triggered background run for schedule #${id}.`);
-          this.loadSchedules();
+          alert(`🚀 Evaluation run for schedule #${id} launched!\n\nSwitching to the History tab to track live progress.`);
+          await this.loadSchedules();
+          const historyTab = document.querySelector('.tab-btn[data-tab="tab-history"]');
+          if (historyTab) historyTab.click();
+          await this.loadHistory();
         } catch (err) {
           alert(`Failed to trigger schedule #${id}: ${err.message}`);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = 'Run Now';
         }
       }));
 
@@ -1306,12 +1315,40 @@ document.addEventListener('DOMContentLoaded', () => {
       } catch (e) { console.error('History error:', e); }
     },
 
+    escapeHtml(value) {
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    },
+
+    paperGenerationMarkup(p, fontSize = '12px') {
+      const hasJudgeOutput = (p.verdicts && p.verdicts.length) || (p.judge_scores && p.judge_scores.length);
+      const legacyMissingScore = !p.generation_status && Number(p.avg_score || 0) === 0 && !hasJudgeOutput;
+      const status = legacyMissingScore ? 'NO_SCORE' : String(p.generation_status || 'COMPLETED').toUpperCase();
+      if (status === 'COMPLETED') {
+        const score = Number(p.avg_score || 0);
+        const scoreClass = score >= 7 ? 'high' : score >= 4 ? 'mid' : 'low';
+        return `<span class="score-badge ${scoreClass}" style="font-size:${fontSize};padding:2px 8px">${score}/10</span>`;
+      }
+
+      const label = status === 'TIMED_OUT' ? 'Timed out' : status === 'NO_SCORE' ? 'No score generated' : 'Generation failed';
+      const stage = this.escapeHtml(p.generation_stage || (status === 'NO_SCORE' ? 'Legacy run; stage unavailable' : 'Unknown stage'));
+      const message = this.escapeHtml(p.generation_message || label);
+      return `
+        <div title="${message}" style="display:flex;flex-direction:column;align-items:flex-start;gap:3px">
+          <span class="score-badge low" style="font-size:${fontSize};padding:2px 8px">${label}</span>
+          <span style="font-size:11px;opacity:.72;max-width:180px;white-space:normal">During: ${stage}</span>
+        </div>
+      `;
+    },
+
     createPaperRow(p) {
       const row = document.createElement('tr');
       row.style.borderBottom = '1px solid var(--color-divider)';
 
-      const score = Number(p.avg_score || 0);
-      const scoreClass = score >= 7 ? 'high' : score >= 4 ? 'mid' : 'low';
       const isChecked = this.selectedPaperIds.has(p.id);
 
       const title = p.title || 'Untitled';
@@ -1328,7 +1365,7 @@ document.addEventListener('DOMContentLoaded', () => {
           <div style="font-size:12px;opacity:.65">${authors}</div>
         </td>
         <td style="padding:10px">
-          <span class="score-badge ${scoreClass}" style="font-size:12px;padding:2px 8px">${score}/10</span>
+          ${this.paperGenerationMarkup(p)}
         </td>
         <td style="padding:10px;max-width:420px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${problem.replace(/"/g, '&quot;')}">${problem}</td>
         <td style="padding:10px">${dateText}</td>
@@ -1523,7 +1560,6 @@ document.addEventListener('DOMContentLoaded', () => {
           `;
         }
         papers.forEach(p => {
-          const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
           const chipsHtml = (p.verdicts || []).map(j => {
             const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
             return `<span class="judge-chip ${cls}">J${j.judge_run}: ${j.relevance_score}</span>`;
@@ -1580,7 +1616,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   <a href="${p.url}" target="_blank" style="font-size:12.5px;color:var(--color-accent);text-decoration:none;margin-top:4px;display:inline-block">🔗 View Original Paper &rarr;</a>
                 </div>
                 <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
-                  <span class="score-badge ${scoreClass}" style="font-size:16px;padding:4px 12px">${p.avg_score}/10</span>
+                  ${this.paperGenerationMarkup(p, '16px')}
                   <div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end">${chipsHtml}</div>
                 </div>
               </div>
@@ -1667,7 +1703,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         papers.forEach((p, idx) => {
-          const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
           const chipsHtml = (p.verdicts || []).map(j => {
             const cls = j.relevance_score >= 7 ? 'high' : j.relevance_score >= 4 ? 'mid' : 'low';
             return `<span class="judge-chip ${cls}">J${j.judge_run}: ${j.relevance_score}</span>`;
@@ -1716,7 +1751,7 @@ document.addEventListener('DOMContentLoaded', () => {
                   <div style="font-size:12px;opacity:.6;margin-top:2px">👤 ${p.authors || 'Unknown'} · 📅 ${p.published || ''}</div>
                   <div style="font-size:12.5px;margin-top:4px">🎯 <strong>Research Problem:</strong> ${p.problem_text}</div>
                 </div>
-                <span class="score-badge ${scoreClass}" style="font-size:15px;padding:3px 8px">${p.avg_score}/10</span>
+                ${this.paperGenerationMarkup(p, '15px')}
               </div>
 
               <div style="display:flex;align-items:center;gap:6px;margin:6px 0">
@@ -1787,11 +1822,14 @@ document.addEventListener('DOMContentLoaded', () => {
       list.forEach(ev => {
         const isRunning = ev.status === 'RUNNING';
         const isFailed = ev.status === 'FAILED';
+        const isPartial = ev.status === 'PARTIAL';
         const isChecked = this.selectedEvalIds.has(ev.id);
         const statusBadge = isRunning
-          ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">🔄 RUNNING (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
+          ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">RUNNING (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
           : isFailed
           ? `<span class="badge" style="background:var(--color-accent);color:#fff;font-weight:700;padding:3px 8px;border-radius:12px">❌ FAILED</span>`
+          : isPartial
+          ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">PARTIAL (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
           : `<span class="badge" style="background:var(--color-emerald-500);color:#fff;font-weight:700;padding:3px 8px;border-radius:12px">✅ COMPLETED</span>`;
 
         const card = document.createElement('div');
@@ -1808,6 +1846,7 @@ document.addEventListener('DOMContentLoaded', () => {
           </div>
           <div style="font-size:13.5px;margin-top:4px"><strong>Problem:</strong> ${ev.problem_text}</div>
           <div style="font-size:12px;opacity:.6;margin-top:2px">Model: ${ev.model_name} | Date: ${ev.created_at} | Progress: ${ev.completed_papers || ev.paper_count}/${ev.total_papers || ev.paper_count} papers</div>
+          ${isRunning && ev.generation_stage ? `<div style="font-size:12px;margin-top:4px"><strong>${this.escapeHtml(ev.generation_stage)}</strong> · ${this.escapeHtml(ev.generation_message || '')}</div>` : ''}
 
           <details style="margin-top:8px" class="past-eval-details" data-id="${ev.id}">
             <summary style="cursor:pointer;font-size:13px;font-weight:800;color:var(--color-accent)">▼ View Evaluated Papers &amp; Judge Transcripts for Eval #${ev.id}</summary>
@@ -1860,7 +1899,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 data.papers.forEach(p => {
                   const pCard = document.createElement('div');
-                  const scoreClass = p.avg_score >= 7 ? 'high' : p.avg_score >= 4 ? 'mid' : 'low';
                   pCard.className = 'card';
                   pCard.style.background = 'var(--color-bg)';
 
@@ -1905,7 +1943,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <strong style="font-size:14px">${p.title}</strong>
                         <div style="font-size:11px;opacity:.6">👤 ${p.authors || 'Unknown'} · 📅 ${p.published || ''}</div>
                       </div>
-                      <span class="score-badge ${scoreClass}">${p.avg_score}/10</span>
+                      ${this.paperGenerationMarkup(p)}
                     </div>
 
                     <a href="${p.url}" target="_blank" class="btn btn-ghost" style="font-size:12px;align-self:flex-start">Open Paper &rarr;</a>
