@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 import core_engine as core
+import sharded_eval
 from core_engine import (
     sync_db_from_cloud,
     init_db,
@@ -416,6 +417,75 @@ async def evaluate_background(data: dict, background_tasks: BackgroundTasks):
     if not problem_statement:
         raise HTTPException(status_code=400, detail="Research problem description is required.")
 
+    if core.DB_GCS_BUCKET:
+        try:
+            if paper_source == "acl":
+                papers = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fetch_acl_papers,
+                        max_results=None,
+                        search_query=keyword_filter,
+                        volume_filter=acl_track,
+                    ),
+                    timeout=FETCH_TIMEOUT_SECONDS,
+                )
+            else:
+                papers = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        fetch_arxiv_papers,
+                        max_results=max_papers,
+                        search_query=keyword_filter,
+                        days_back=days_back,
+                    ),
+                    timeout=FETCH_TIMEOUT_SECONDS,
+                )
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timed out fetching {paper_source.upper()} papers after {FETCH_TIMEOUT_SECONDS}s",
+            ) from exc
+        except (RuntimeError, ValueError, OSError) as exc:
+            raise HTTPException(status_code=502, detail=f"Failed to fetch {paper_source.upper()} papers: {exc}") from exc
+
+        if not papers:
+            raise HTTPException(status_code=404, detail=f"No {paper_source.upper()} papers found matching filters.")
+
+        eval_id = await asyncio.to_thread(
+            sharded_eval.create_evaluation,
+            problem_statement,
+            model_name,
+            len(papers),
+        )
+        try:
+            manifest = await asyncio.to_thread(
+                sharded_eval.create_manifest,
+                eval_id=eval_id,
+                problem=problem_statement,
+                model=model_name,
+                papers=papers,
+                max_concurrent=max_concurrent,
+            )
+            operation_name = await asyncio.to_thread(
+                sharded_eval.launch_job,
+                eval_id,
+                manifest["total_shards"],
+            )
+        except (RuntimeError, ValueError, OSError) as exc:
+            await asyncio.to_thread(sharded_eval.update_evaluation_status, eval_id, "FAILED")
+            raise HTTPException(status_code=502, detail=f"Failed to launch distributed evaluation: {exc}") from exc
+
+        return {
+            "status": "success",
+            "eval_id": eval_id,
+            "total_papers": len(papers),
+            "total_shards": manifest["total_shards"],
+            "operation_name": operation_name,
+            "message": (
+                f"Distributed evaluation #{eval_id} launched with "
+                f"{manifest['total_shards']} retryable shard(s)."
+            ),
+        }
+
     # Create record immediately so request returns quickly and avoids gateway timeouts.
     eval_id = save_evaluation(problem=problem_statement, model=model_name, status="RUNNING", total=0, sync_cloud=True)
 
@@ -573,6 +643,32 @@ async def run_background_eval_task(
 # Schedules API
 # ──────────────────────────────────────────────────────────────────────────────
 
+@app.get("/api/debug/scheduler")
+async def debug_scheduler_route():
+    import traceback
+    project_id = os.environ.get("GCP_PROJECT_ID", os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200"))).strip()
+    res = {"project_id": project_id, "env": dict(os.environ)}
+    try:
+        import google.auth
+        import google.auth.transport.requests
+        from urllib import request as urllib_req
+
+        creds, proj = google.auth.default()
+        res["auth_project"] = proj
+        res["service_account"] = getattr(creds, "service_account_email", "N/A")
+        creds.refresh(google.auth.transport.requests.Request())
+        res["token_valid"] = creds.valid
+        url = f"https://cloudscheduler.googleapis.com/v1/projects/{project_id}/locations/us-central1/jobs/hourly-paper-matcher-eval"
+        req = urllib_req.Request(url, headers={"Authorization": f"Bearer {creds.token}"})
+        with urllib_req.urlopen(req, timeout=8) as resp:
+            res["api_status"] = resp.status
+            res["api_body"] = json.loads(resp.read().decode())
+    except Exception as e:
+        res["exception"] = str(e)
+        res["traceback"] = traceback.format_exc()
+    return res
+
+
 @app.get("/api/schedules")
 async def get_schedules():
     return {
@@ -703,7 +799,7 @@ async def trigger_schedule_run(schedule_id: int, background_tasks: BackgroundTas
             min_score=target.get("min_score") or 6,
         )
         if err:
-            update_schedule_last_run(schedule_id, today_str, "failed", err, None)
+            update_schedule_last_run(schedule_id, today_str, "failed", err, eval_id)
         else:
             update_schedule_last_run(schedule_id, today_str, "success", f"Saved {len(results)} papers", eval_id)
 
@@ -717,7 +813,19 @@ async def trigger_schedule_run(schedule_id: int, background_tasks: BackgroundTas
 
 @app.get("/api/evaluations")
 async def list_evaluations():
-    return {"evaluations": load_past_evaluations()}
+    if core.DB_GCS_BUCKET or core.AWS_S3_BUCKET:
+        await asyncio.to_thread(sync_db_from_cloud)
+    evaluations = load_past_evaluations()
+    for evaluation in evaluations:
+        if evaluation.get("status") != "RUNNING" or not core.DB_GCS_BUCKET:
+            continue
+        try:
+            progress = await asyncio.to_thread(sharded_eval.get_progress, int(evaluation["id"]))
+        except (RuntimeError, ValueError, OSError):
+            progress = None
+        if progress:
+            evaluation.update(progress)
+    return {"evaluations": evaluations}
 
 
 @app.get("/api/evaluations/{eval_id}")
@@ -750,6 +858,8 @@ async def remove_papers(req: dict):
 
 @app.get("/api/all-papers")
 async def list_all_papers():
+    if core.DB_GCS_BUCKET or core.AWS_S3_BUCKET:
+        await asyncio.to_thread(sync_db_from_cloud)
     return {"papers": load_all_papers()}
 
 
