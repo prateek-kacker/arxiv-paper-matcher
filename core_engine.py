@@ -747,7 +747,7 @@ def get_gcp_scheduler_status(job_name: str = "hourly-paper-matcher-eval", locati
     Queries state of GCP Cloud Scheduler job via Google REST API (or gcloud CLI fallback).
     Returns status dict with state ('PAUSED', 'ENABLED', or 'UNKNOWN').
     """
-    project_id = os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200")).strip()
+    project_id = os.environ.get("GCP_PROJECT_ID", os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200"))).strip()
     try:
         import google.auth
         import google.auth.transport.requests
