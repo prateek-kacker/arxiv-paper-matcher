@@ -643,31 +643,6 @@ async def run_background_eval_task(
 # Schedules API
 # ──────────────────────────────────────────────────────────────────────────────
 
-@app.get("/api/debug/scheduler")
-async def debug_scheduler_route():
-    import traceback
-    project_id = os.environ.get("GCP_PROJECT_ID", os.environ.get("GCP_PROJECT", os.environ.get("GOOGLE_CLOUD_PROJECT", "gen-lang-client-0096294200"))).strip()
-    res = {"project_id": project_id, "env": dict(os.environ)}
-    try:
-        import google.auth
-        import google.auth.transport.requests
-        from urllib import request as urllib_req
-
-        creds, proj = google.auth.default()
-        res["auth_project"] = proj
-        res["service_account"] = getattr(creds, "service_account_email", "N/A")
-        creds.refresh(google.auth.transport.requests.Request())
-        res["token_valid"] = creds.valid
-        url = f"https://cloudscheduler.googleapis.com/v1/projects/{project_id}/locations/us-central1/jobs/hourly-paper-matcher-eval"
-        req = urllib_req.Request(url, headers={"Authorization": f"Bearer {creds.token}"})
-        with urllib_req.urlopen(req, timeout=8) as resp:
-            res["api_status"] = resp.status
-            res["api_body"] = json.loads(resp.read().decode())
-    except Exception as e:
-        res["exception"] = str(e)
-        res["traceback"] = traceback.format_exc()
-    return res
-
 
 @app.get("/api/schedules")
 async def get_schedules():
