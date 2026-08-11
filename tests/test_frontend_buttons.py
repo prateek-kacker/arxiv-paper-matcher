@@ -90,7 +90,7 @@ def test_all_dynamic_button_classes_have_event_bindings():
             if token.startswith("btn-") and token not in {"btn-primary", "btn-secondary"}:
                 class_tokens.add(token)
 
-    listener_classes = set(re.findall(r"querySelectorAll\('\.(btn-[a-z0-9-]+)'\)", APP_JS))
+    listener_classes = set(re.findall(r"querySelectorAll\(['\"]\.(btn-[a-z0-9-]+)['\"]", APP_JS))
     delegated_classes = set(re.findall(r"classList\.contains\('([a-z0-9-]+)'\)", APP_JS))
 
     allowed_delegated = {"tab-btn", "subtab-btn"}
