@@ -359,3 +359,16 @@ def test_background_worker_skips_already_saved_urls(monkeypatch):
     assert ev["status"] == "COMPLETED"
     assert ev["completed_papers"] == 2
     assert ev["total_papers"] == 2
+
+
+def test_resume_evaluation_api_workflow(api_client, monkeypatch):
+    """Test POST /api/evaluations/{id}/resume endpoint."""
+    eval_id = core.save_evaluation("Resume test problem", "gemini-2.5-flash", status="RUNNING", total=10, sync_cloud=False)
+    monkeypatch.setattr(server, "resolve_gemini_api_key", lambda *args, **kwargs: "fake-key")
+
+    res = api_client.post(f"/api/evaluations/{eval_id}/resume")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert data["eval_id"] == eval_id
+

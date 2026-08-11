@@ -809,6 +809,55 @@ async def get_evaluation_detail(eval_id: int):
     return {"eval_id": eval_id, "papers": papers}
 
 
+@app.post("/api/evaluations/{eval_id}/resume")
+async def resume_evaluation_route(eval_id: int, background_tasks: BackgroundTasks, data: Optional[dict] = None):
+    data = data or {}
+    api_key = resolve_gemini_api_key(data.get("api_key"))
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Gemini API key is required.")
+
+    evaluations = load_past_evaluations()
+    target = next((e for e in evaluations if int(e.get("id", -1)) == int(eval_id)), None)
+    if not target:
+        raise HTTPException(status_code=404, detail=f"Evaluation #{eval_id} not found.")
+
+    problem_statement = target.get("problem_text", "")
+    model_name = target.get("model_name", "gemini-2.5-flash")
+    paper_source = data.get("paper_source") or target.get("paper_source") or "arxiv"
+    acl_track = data.get("acl_track") or target.get("acl_track") or "all"
+    max_papers = data.get("max_papers") or target.get("max_papers")
+    days_back = data.get("days_back") or target.get("days_back")
+    if paper_source == "acl":
+        max_papers = None
+    if max_papers is None and days_back is None and paper_source != "acl":
+        max_papers = 10
+    keyword_filter = data.get("keyword_filter") or target.get("keyword_filter") or ""
+    max_concurrent = int(data.get("max_concurrent") or target.get("max_concurrent") or 3)
+
+    existing_urls = load_evaluation_paper_urls(eval_id)
+
+    background_tasks.add_task(
+        run_background_eval_task,
+        eval_id,
+        api_key,
+        problem_statement,
+        model_name,
+        paper_source,
+        acl_track,
+        max_papers,
+        days_back,
+        keyword_filter,
+        max_concurrent,
+    )
+
+    return {
+        "status": "success",
+        "eval_id": eval_id,
+        "completed_count": len(existing_urls),
+        "message": f"Resumed background evaluation #{eval_id} ({len(existing_urls)} papers already completed)."
+    }
+
+
 @app.delete("/api/evaluations/{eval_id}")
 async def remove_evaluation(eval_id: int):
     delete_evaluation(int(eval_id))

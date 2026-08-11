@@ -1832,6 +1832,11 @@ document.addEventListener('DOMContentLoaded', () => {
           ? `<span class="badge" style="background:var(--color-amber-500);color:#000;font-weight:700;padding:3px 8px;border-radius:12px">PARTIAL (${ev.completed_papers || 0}/${ev.total_papers || '?'})</span>`
           : `<span class="badge" style="background:var(--color-emerald-500);color:#fff;font-weight:700;padding:3px 8px;border-radius:12px">✅ COMPLETED</span>`;
 
+        const canResume = isRunning || isPartial || (ev.total_papers && (ev.completed_papers || ev.paper_count || 0) < ev.total_papers);
+        const resumeBtnHtml = canResume
+          ? `<button class="btn btn-secondary btn-resume-eval" data-id="${ev.id}" style="margin-right:6px">▶️ Resume</button>`
+          : '';
+
         const card = document.createElement('div');
         card.className = 'card';
         if (isRunning) card.style.borderLeft = '4px solid var(--color-amber-500)';
@@ -1842,7 +1847,10 @@ document.addEventListener('DOMContentLoaded', () => {
               <div style="font-weight:800;font-size:15px">Eval #${ev.id} — Overall: ${ev.overall_avg || 0}/10</div>
               ${statusBadge}
             </div>
-            <button class="btn btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--color-accent)">Delete Run</button>
+            <div>
+              ${resumeBtnHtml}
+              <button class="btn btn-secondary btn-del-eval" data-id="${ev.id}" style="color:var(--color-accent)">Delete Run</button>
+            </div>
           </div>
           <div style="font-size:13.5px;margin-top:4px"><strong>Problem:</strong> ${ev.problem_text}</div>
           <div style="font-size:12px;opacity:.6;margin-top:2px">Model: ${ev.model_name} | Date: ${ev.created_at} | Progress: ${ev.completed_papers || ev.paper_count}/${ev.total_papers || ev.paper_count} papers</div>
