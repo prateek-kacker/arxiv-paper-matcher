@@ -12,6 +12,7 @@ Results are persisted into SQLite (`paper_matcher.db`) and uploaded to Cloud Sto
 import sys
 import os
 import argparse
+import asyncio
 from datetime import datetime
 from pathlib import Path
 
@@ -53,6 +54,8 @@ def main():
     parser = argparse.ArgumentParser(description="Headless Batch Runner for arXiv Paper Matcher")
     parser.add_argument("--all", action="store_true", help="Force run all active recurring schedules")
     parser.add_argument("--schedule-id", type=int, help="Run a specific recurring schedule ID")
+    parser.add_argument("--sharded-worker", action="store_true", help="Run one durable evaluation shard")
+    parser.add_argument("--eval-id", type=int, help="Evaluation ID for sharded worker mode")
     args = parser.parse_args()
 
     log("🚀 Starting Headless Batch Runner")
@@ -76,6 +79,17 @@ def main():
     if not api_key:
         log("❌ ERROR: GEMINI_API_KEY environment variable is not set!")
         sys.exit(1)
+
+    if args.sharded_worker:
+        if not args.eval_id:
+            parser.error("--eval-id is required with --sharded-worker")
+        from sharded_eval import run_shard
+
+        shard_index = int(os.environ.get("CLOUD_RUN_TASK_INDEX", "0"))
+        log(f"Running evaluation {args.eval_id}, shard {shard_index}")
+        result = asyncio.run(run_shard(args.eval_id, shard_index, api_key))
+        log(f"Shard completed: {result}")
+        return
 
     # 2. Sync latest SQLite database from Cloud Storage
     log("📥 Syncing database from Cloud Storage...")
@@ -151,7 +165,7 @@ def main():
 
         if err:
             log(f"❌ Schedule #{sch_id} failed: {err}")
-            update_schedule_last_run(sch_id, today_str, "failed", err, None, sync_cloud=False)
+            update_schedule_last_run(sch_id, today_str, "failed", err, eval_id, sync_cloud=False)
             fail_count += 1
         else:
             log(f"✅ Schedule #{sch_id} completed successfully!")

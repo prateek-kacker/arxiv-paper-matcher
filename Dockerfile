@@ -9,7 +9,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY core_engine.py server.py batch_runner.py Archive_research_multi-agent_debate.py ./
+COPY core_engine.py sharded_eval.py server.py batch_runner.py Archive_research_multi-agent_debate.py ./
 COPY static ./static
 
 EXPOSE 8080

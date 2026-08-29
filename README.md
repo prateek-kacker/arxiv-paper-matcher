@@ -59,7 +59,7 @@ Evaluations can be executed interactively in real time with live streaming updat
 3. **Skeptic Agent** — Formulates a counter-argument **AGAINST** relevance, evaluating domain gaps, missing benchmarks, assumption mismatches, and execution limitations.
 4. **5-Judge Consensus Panel** — 5 independent LLM judges grade the paper on a scale of 1–10 using distinct temperature settings (`0.5` to `1.3`) and random seeds to eliminate single-prompt LLM variance.
 5. **Consensus Score & Representative Verdict** — The final paper score is the exact arithmetic mean of all 5 judges. The official verdict narrative is dynamically selected from the judge score closest to the panel average.
-6. **Persist & Sync** — All paper metadata, extracted text, debate transcripts, and individual judge breakdown scores are saved to SQLite (`paper_matcher.db`) and automatically pushed to cloud storage (GCS / AWS S3).
+6. **Persist & Sync** — All paper metadata, extracted text, debate transcripts, and individual judge breakdown scores are saved to the bucket-backed JSON store. Background runs first write immutable per-paper GCS objects, then merge once into the primary store.
 7. **Webhook Notification** — Optionally dispatches structured JSON evaluation payloads directly to your specified webhook endpoint (`KACKERS_POST_URL`).
 
 ---
@@ -82,7 +82,7 @@ Evaluations can be executed interactively in real time with live streaming updat
 
 ### ⚡ Flexible Execution Modes
 - **Interactive Live SSE Streaming**: Real-time Server-Sent Events (SSE) stream streaming Advocate arguments, Skeptic rebuttals, and live judge scores, with a one-click **Stop Evaluation** button to cancel execution instantly.
-- **Background Evaluation Mode**: Non-blocking asynchronous task execution allowing users to navigate away or run concurrent tasks while live status updates track progress in the History tab.
+- **Background Evaluation Mode**: Durable Cloud Run Job execution in fixed groups of 10 papers. Up to 4 groups run in parallel, failed tasks retry 3 times, and retries skip immutable paper results that already exist.
 - **Fetch-Only Mode**: Preview retrieved paper titles and abstracts first before selectively initiating multi-agent debate on chosen papers.
 
 ### 🗄️ Modernist Web SPA & History Inspector
@@ -99,8 +99,10 @@ Evaluations can be executed interactively in real time with live streaming updat
 - **Webhook Alerts**: Automatically POST structured JSON evaluation summaries to custom HTTP webhooks (`KACKERS_POST_URL`).
 
 ### ☁️ Cloud Persistence & Storage
-- Bi-directional database synchronization (`paper_matcher.db`) with **Google Cloud Storage (GCS)** and **AWS S3**.
-- Write-Ahead Logging (WAL) checkpointing ensures database integrity prior to cloud upload.
+- The primary bucket-backed JSON store supports **Google Cloud Storage (GCS)** and **AWS S3** synchronization.
+- Distributed workers write deterministic per-paper GCS objects and never update the shared store concurrently.
+- Finalization uses GCS generation preconditions and an idempotent URL merge, preventing last-writer-wins data loss.
+- History reports completed papers, completed batches, generation stage, and retry events while a Job is running.
 
 ---
 

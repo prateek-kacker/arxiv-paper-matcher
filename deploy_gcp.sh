@@ -84,11 +84,13 @@ if gcloud run jobs describe "${JOB_NAME}" --region="${REGION}" --project="${PROJ
         --region="${REGION}" \
         --command="python" \
         --args="batch_runner.py" \
-        --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID}" \
+        --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID},PAPER_MATCHER_MAX_TASK_RETRIES=3" \
         --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
         --memory=2Gi \
         --cpu=2 \
-        --task-timeout=30m \
+        --task-timeout=70m \
+        --max-retries=3 \
+        --parallelism=4 \
         --project="${PROJECT_ID}"
 else
     gcloud run jobs create "${JOB_NAME}" \
@@ -96,13 +98,23 @@ else
         --region="${REGION}" \
         --command="python" \
         --args="batch_runner.py" \
-        --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID}" \
+        --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID},PAPER_MATCHER_MAX_TASK_RETRIES=3" \
         --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
         --memory=2Gi \
         --cpu=2 \
-        --task-timeout=30m \
+        --task-timeout=70m \
+        --max-retries=3 \
+        --parallelism=4 \
         --project="${PROJECT_ID}"
 fi
+
+    # The Cloud Run service launches durable evaluation executions on this job.
+    PROJECT_NUMBER=$(gcloud projects describe "${PROJECT_ID}" --format="value(projectNumber)")
+    gcloud run jobs add-iam-policy-binding "${JOB_NAME}" \
+        --region="${REGION}" \
+        --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+        --role="roles/run.invoker" \
+        --project="${PROJECT_ID}" >/dev/null
 
 # 7. Create Cloud Scheduler Cron Job (Runs hourly to trigger due schedules)
 JOB_RUN_URI="https://${REGION}-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/${PROJECT_ID}/jobs/${JOB_NAME}:run"

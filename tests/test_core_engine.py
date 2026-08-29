@@ -165,3 +165,50 @@ def test_cloud_sync_fallback(temp_db_env):
     ok, msg = core.sync_db_to_cloud()
     assert ok is False
     assert "disabled" in msg.lower()
+
+
+def test_headless_timeout_persists_generation_stage(temp_db_env, monkeypatch):
+    """A timed-out Gemini run should retain its last stage and fail the evaluation."""
+    paper = Paper(
+        title="Slow paper",
+        authors="A. Researcher",
+        abstract="A slow evaluation.",
+        url="https://arxiv.org/abs/slow",
+        published="2026-08-07",
+        categories="cs.CL",
+    )
+    monkeypatch.setattr(core, "fetch_arxiv_papers", lambda **_kwargs: [paper])
+    monkeypatch.setattr(core, "PAPER_EVAL_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(core.genai, "Client", lambda api_key: object())
+
+    class SlowEngine:
+        def __init__(self, client, model_name):
+            self.client = client
+            self.model_name = model_name
+
+        async def run_debate(self, paper, problem, status_callback=None):
+            if status_callback:
+                status_callback("5 Judges Deliberating")
+            raise TimeoutError()
+
+    monkeypatch.setattr(core, "DebateEngine", SlowEngine)
+
+    eval_id, results, error = core._run_evaluation_headless(
+        api_key="dummy",
+        problem_statement="Test timeout reporting",
+        model_name="gemini-2.5-flash",
+        max_papers=1,
+        days_back=None,
+        keyword_filter="",
+        max_concurrent=1,
+        min_score=1,
+    )
+
+    assert error == "All paper evaluations failed or timed out."
+    assert results[0].generation_status == "TIMED_OUT"
+    saved = core.load_evaluation_papers(eval_id)[0]
+    assert saved["generation_status"] == "TIMED_OUT"
+    assert saved["generation_stage"] == "5 Judges Deliberating"
+    assert "timed out" in saved["generation_message"].lower()
+    evaluation = next(item for item in core.load_past_evaluations() if item["id"] == eval_id)
+    assert evaluation["status"] == "FAILED"
