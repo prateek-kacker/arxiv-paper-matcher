@@ -111,6 +111,7 @@ Evaluations can be executed interactively in real time with live streaming updat
 ### Prerequisites
 - **Python 3.10+**
 - **Google Gemini API Key** ([Get key from Google AI Studio](https://aistudio.google.com/apikey))
+- **Google OAuth 2.0 Web Client ID** with the app URL listed as an authorized JavaScript origin
 
 ### 1. Clone & Install Dependencies
 
@@ -127,6 +128,8 @@ Set your Gemini API key and optional cloud storage / webhook configurations:
 ```bash
 # Required
 export GEMINI_API_KEY="your-gemini-api-key"
+export GOOGLE_CLIENT_ID="your-client-id.apps.googleusercontent.com"
+export SESSION_SECRET="a-long-random-secret"
 
 # Optional Cloud Storage Sync
 export PAPER_MATCHER_DB_BUCKET="your-gcs-bucket-name"
@@ -152,6 +155,8 @@ uvicorn server:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Open your browser and navigate to **`http://localhost:8000`**.
+
+The Google sign-in screen is shown first. Access is restricted server-side to `prateek.kacker@gmail.com` and `shipra.kacker@gmail.com`. For local use, add `http://localhost:8000` to the OAuth client's authorized JavaScript origins. For Cloud Run, add the deployed service URL. The deployment script expects a Secret Manager secret named `SESSION_SECRET`.
 
 *(Note: Legacy Streamlit UI can still be launched via `streamlit run Archive_research_multi-agent_debate.py`)*
 

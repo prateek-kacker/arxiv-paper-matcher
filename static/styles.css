@@ -110,6 +110,38 @@ a { color: var(--color-accent); text-underline-offset: 3px; }
   gap: 24px;
 }
 
+.auth-account {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 16px;
+  border-bottom: 2px solid var(--color-divider);
+  font-size: 12px;
+}
+
+.auth-account > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.auth-account-label {
+  opacity: 0.55;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.auth-account strong {
+  overflow-wrap: anywhere;
+}
+
+.auth-signout {
+  flex: none;
+  color: var(--color-accent);
+  font-weight: 800;
+}
+
 .main-panel {
   flex: 1;
   overflow-y: auto;

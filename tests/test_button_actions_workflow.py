@@ -205,6 +205,46 @@ def test_schedule_run_now_button_workflow(api_client, monkeypatch):
     assert evals[0]["id"] == sch["last_eval_id"]
     assert evals[0]["status"] == "COMPLETED"
 
+def _create_schedule(api_client):
+    payload = {
+        "label": "Cloud Run Now", "problem_text": "P", "model_name": "gemini-2.5-flash",
+        "paper_source": "arxiv", "acl_track": "all", "fetch_mode": "count", "max_papers": 5,
+        "days_back": None, "keyword_filter": "agent", "min_score": 6, "max_concurrent": 2,
+        "run_time": "10:00",
+    }
+    return api_client.post("/api/schedules", json=payload).json()["schedule_id"]
+
+
+def test_schedule_run_now_starts_cloud_run_job_on_cloud_run(api_client, monkeypatch):
+    """Regression: on Cloud Run, Run Now must start the job, not an in-process background task."""
+    monkeypatch.setattr(server, "resolve_gemini_api_key", lambda: "fake-key")
+    monkeypatch.setenv("K_SERVICE", "archive-paper-matcher")
+    monkeypatch.setenv("GCP_PROJECT_ID", "proj")
+    launched = []
+    monkeypatch.setattr(server.sharded_eval, "launch_schedule_job", lambda sid: launched.append(sid) or "operations/op1")
+    monkeypatch.setattr(server, "_run_evaluation_headless", lambda **k: (_ for _ in ()).throw(AssertionError("ran in-process")))
+
+    sch_id = _create_schedule(api_client)
+    res = api_client.post(f"/api/schedules/{sch_id}/run")
+    assert res.status_code == 200
+    assert res.json()["operation"] == "operations/op1"
+    assert launched == [sch_id]
+
+
+def test_schedule_run_now_reports_job_launch_failure(api_client, monkeypatch):
+    monkeypatch.setattr(server, "resolve_gemini_api_key", lambda: "fake-key")
+    monkeypatch.setenv("K_SERVICE", "archive-paper-matcher")
+    monkeypatch.setenv("GCP_PROJECT_ID", "proj")
+
+    def _boom(sid):
+        raise RuntimeError("403 denied")
+
+    monkeypatch.setattr(server.sharded_eval, "launch_schedule_job", _boom)
+    sch_id = _create_schedule(api_client)
+    res = api_client.post(f"/api/schedules/{sch_id}/run")
+    assert res.status_code == 502
+    assert "403 denied" in res.json()["detail"]
+
 
 def test_delete_history_run_and_paper_buttons_workflow(api_client):
     """Test 'Delete Run' and 'Delete Paper' button actions from History tab."""

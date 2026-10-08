@@ -9,16 +9,21 @@ import os
 import json
 import asyncio
 import time
+import html
+from urllib.parse import parse_qs
 from contextlib import asynccontextmanager
 from typing import Optional
 from pathlib import Path
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 from sse_starlette.sse import EventSourceResponse
+from google.auth.transport import requests as google_requests
+from google.oauth2 import id_token
 
 import core_engine as core
 import sharded_eval
@@ -72,6 +77,10 @@ app = FastAPI(title="arXiv CS.CL Paper Matcher", version="2.0.0", lifespan=lifes
 FETCH_TIMEOUT_SECONDS = int(os.environ.get("PAPER_FETCH_TIMEOUT_SECONDS", "45"))
 CHECKPOINT_EVERY_N_PAPERS = int(os.environ.get("PAPER_CHECKPOINT_EVERY_N_PAPERS", "1"))
 CHECKPOINT_EVERY_SECONDS = int(os.environ.get("PAPER_CHECKPOINT_EVERY_SECONDS", "30"))
+ALLOWED_EMAILS = {
+    "prateek.kacker@gmail.com",
+    "shipra.kacker@gmail.com",
+}
 
 app.add_middleware(
     CORSMiddleware,
@@ -84,6 +93,104 @@ app.add_middleware(
 STATIC_DIR = Path(__file__).parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+
+def _auth_disabled() -> bool:
+    return os.environ.get("AUTH_DISABLED", "").strip().lower() == "true"
+
+
+def _login_page(error: str = "") -> HTMLResponse:
+    login_path = STATIC_DIR / "login.html"
+    if not login_path.exists():
+        return HTMLResponse("Google sign-in page is missing.", status_code=500)
+
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    page = login_path.read_text(encoding="utf-8")
+    page = page.replace("__GOOGLE_CLIENT_ID__", html.escape(client_id, quote=True))
+    page = page.replace("__AUTH_ERROR__", html.escape(error))
+    page = page.replace("__ERROR_CLASS__", "" if error else "hidden")
+    return HTMLResponse(page)
+
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    if _auth_disabled():
+        return await call_next(request)
+
+    public_paths = {"/login", "/logout"}
+    is_public = request.url.path in public_paths or request.url.path.startswith("/static/")
+    if is_public:
+        return await call_next(request)
+
+    email = str(request.session.get("email", "")).lower()
+    if request.session.get("authenticated") and email in ALLOWED_EMAILS:
+        return await call_next(request)
+
+    if request.url.path.startswith("/api/"):
+        return JSONResponse({"detail": "Authentication required."}, status_code=401)
+    return RedirectResponse("/login", status_code=303)
+
+
+# Added after the auth middleware so it wraps the auth check and populates request.session.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ.get("SESSION_SECRET", "development-session-secret-change-me"),
+    session_cookie="paper_matcher_session",
+    same_site="lax",
+    https_only=bool(os.environ.get("K_SERVICE")),
+    max_age=60 * 60 * 24 * 7,
+)
+
+
+@app.get("/login", response_class=HTMLResponse)
+async def login_page(request: Request):
+    email = str(request.session.get("email", "")).lower()
+    if request.session.get("authenticated") and email in ALLOWED_EMAILS:
+        return RedirectResponse("/", status_code=303)
+    if not os.environ.get("GOOGLE_CLIENT_ID", "").strip():
+        return _login_page("Google sign-in is not configured. Set GOOGLE_CLIENT_ID.")
+    return _login_page()
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login(request: Request):
+    client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
+    if not client_id:
+        return _login_page("Google sign-in is not configured. Set GOOGLE_CLIENT_ID.")
+
+    form = parse_qs((await request.body()).decode("utf-8"))
+    credential = form.get("credential", [""])[0]
+    if not credential:
+        return _login_page("No credential was received from Google.")
+
+    try:
+        identity = id_token.verify_oauth2_token(
+            credential,
+            google_requests.Request(),
+            client_id,
+        )
+    except ValueError:
+        return _login_page("Google could not verify this sign-in. Please try again.")
+
+    email = str(identity.get("email", "")).strip().lower()
+    if not identity.get("email_verified") or email not in ALLOWED_EMAILS:
+        return _login_page("Access is limited to the two approved Google accounts.")
+
+    request.session.clear()
+    request.session["authenticated"] = True
+    request.session["email"] = email
+    return RedirectResponse("/", status_code=303)
+
+
+@app.get("/logout")
+async def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse("/login", status_code=303)
+
+
+@app.get("/api/auth/me")
+async def auth_me(request: Request):
+    return {"email": request.session.get("email")}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -777,6 +884,19 @@ async def trigger_schedule_run(schedule_id: int, background_tasks: BackgroundTas
             update_schedule_last_run(schedule_id, today_str, "failed", err, eval_id)
         else:
             update_schedule_last_run(schedule_id, today_str, "success", f"Saved {len(results)} papers", eval_id)
+
+    # On Cloud Run, request-scoped CPU is throttled and the instance can be recycled,
+    # so long evaluations must run in the Cloud Run Job instead of a background task.
+    if os.environ.get("K_SERVICE") and os.environ.get("GCP_PROJECT_ID"):
+        try:
+            operation = await asyncio.to_thread(sharded_eval.launch_schedule_job, schedule_id)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"Could not start Cloud Run Job: {exc}")
+        return {
+            "success": True,
+            "message": f"Started Cloud Run Job for schedule #{schedule_id}",
+            "operation": operation,
+        }
 
     background_tasks.add_task(_run_bg)
     return {"success": True, "message": f"Triggered background evaluation for schedule #{schedule_id}"}

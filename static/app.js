@@ -17,9 +17,20 @@ document.addEventListener('DOMContentLoaded', () => {
       this.bindTabNavigation();
       this.bindFormControls();
       this.bindPaperModal();
+      this.loadAuthenticatedUser();
       this.fetchConfig();
       this.loadSchedules();
       this.loadHistory();
+    },
+
+    async loadAuthenticatedUser() {
+      try {
+        const data = await this.fetchJsonWithTimeout('/api/auth/me');
+        const email = document.getElementById('auth-user-email');
+        if (email && data.email) email.textContent = data.email;
+      } catch (err) {
+        if (err.message.includes('(401)')) window.location.assign('/login');
+      }
     },
 
     async fetchJsonWithTimeout(url, timeoutMs = 15000) {

@@ -17,6 +17,12 @@ SERVICE_NAME="archive-paper-matcher"
 JOB_NAME="archive-paper-matcher-job"
 SCHEDULER_JOB_NAME="hourly-paper-matcher-eval"
 BUCKET_NAME="${PAPER_MATCHER_DB_BUCKET:-${PROJECT_ID}-paper-matcher-data}"
+GOOGLE_CLIENT_ID="${GOOGLE_CLIENT_ID:-}"
+
+if [[ -z "${GOOGLE_CLIENT_ID}" ]]; then
+    echo "GOOGLE_CLIENT_ID must be set to a Google OAuth Web client ID."
+    exit 1
+fi
 
 echo "======================================================================"
 echo "🚀 Starting GCP Deployment for arXiv CS.CL Paper Matcher"
@@ -67,8 +73,8 @@ gcloud run deploy "${SERVICE_NAME}" \
     --region="${REGION}" \
     --platform=managed \
     --allow-unauthenticated \
-    --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=${REGION}" \
-    --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest" \
+    --set-env-vars="PAPER_MATCHER_DB_BUCKET=${BUCKET_NAME},GCP_PROJECT_ID=${PROJECT_ID},GCP_LOCATION=${REGION},GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}" \
+    --set-secrets="GEMINI_API_KEY=GEMINI_API_KEY:latest,SESSION_SECRET=SESSION_SECRET:latest" \
     --memory=2Gi \
     --cpu=2 \
     --project="${PROJECT_ID}"

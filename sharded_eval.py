@@ -579,3 +579,24 @@ def launch_job(eval_id: int, total_shards: int) -> str:
         raise RuntimeError(f"Cloud Run Job launch failed ({response.status_code}): {response.text[:500]}")
     operation = response.json()
     return operation.get("name", "")
+
+def launch_schedule_job(schedule_id: int) -> str:
+    """Start the Cloud Run Job for a single schedule so it outlives the web request."""
+    project = os.environ.get("GCP_PROJECT_ID", "").strip()
+    region = os.environ.get("GCP_LOCATION", os.environ.get("GCP_REGION", "us-central1")).strip()
+    job_name = os.environ.get("PAPER_MATCHER_JOB_NAME", "archive-paper-matcher-job").strip()
+    if not project:
+        raise RuntimeError("GCP_PROJECT_ID is required to launch the schedule job.")
+
+    credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    session = AuthorizedSession(credentials)
+    response = session.post(
+        f"https://run.googleapis.com/v2/projects/{project}/locations/{region}/jobs/{job_name}:run",
+        json={"overrides": {"containerOverrides": [{
+            "args": ["batch_runner.py", f"--schedule-id={int(schedule_id)}"],
+        }]}},
+        timeout=30,
+    )
+    if response.status_code not in {200, 201}:
+        raise RuntimeError(f"Cloud Run Job launch failed ({response.status_code}): {response.text[:500]}")
+    return response.json().get("name", "")

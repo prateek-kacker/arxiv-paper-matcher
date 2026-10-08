@@ -36,6 +36,83 @@ def test_get_config(api_client):
     assert "auto_post" in data
 
 
+def test_auth_redirects_browser_and_rejects_api_without_session(api_client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+
+    page_response = api_client.get("/", follow_redirects=False)
+    api_response = api_client.get("/api/config")
+
+    assert page_response.status_code == 303
+    assert page_response.headers["location"] == "/login"
+    assert api_response.status_code == 401
+
+
+@pytest.mark.parametrize("email", ["prateek.kacker@gmail.com", "shipra.kacker@gmail.com"])
+def test_google_login_allows_approved_accounts(api_client, monkeypatch, email):
+    client_id = "test-client.apps.googleusercontent.com"
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", client_id)
+    monkeypatch.setattr(
+        server.id_token,
+        "verify_oauth2_token",
+        lambda credential, request, audience: {
+            "email": email,
+            "email_verified": True,
+            "aud": audience,
+        },
+    )
+
+    response = api_client.post(
+        "/login",
+        data={"credential": "verified-google-token"},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/"
+    assert api_client.get("/api/auth/me").json() == {"email": email}
+
+
+def test_google_login_rejects_unapproved_account(api_client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+    monkeypatch.setattr(
+        server.id_token,
+        "verify_oauth2_token",
+        lambda *_args: {
+            "email": "someone.else@gmail.com",
+            "email_verified": True,
+        },
+    )
+
+    response = api_client.post("/login", data={"credential": "verified-google-token"})
+
+    assert response.status_code == 200
+    assert "Access is limited" in response.text
+    assert api_client.get("/api/config").status_code == 401
+
+
+def test_logout_clears_authenticated_session(api_client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+    monkeypatch.setattr(
+        server.id_token,
+        "verify_oauth2_token",
+        lambda *_args: {
+            "email": "prateek.kacker@gmail.com",
+            "email_verified": True,
+        },
+    )
+    api_client.post("/login", data={"credential": "verified-google-token"})
+
+    response = api_client.get("/logout", follow_redirects=False)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    assert api_client.get("/api/config").status_code == 401
+
+
 def test_cloud_sync_status(api_client):
     """Test /api/cloud-sync/status endpoint."""
     response = api_client.get("/api/cloud-sync/status")

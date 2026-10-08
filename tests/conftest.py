@@ -15,6 +15,7 @@ def temp_db_env(tmp_path, monkeypatch):
     monkeypatch.setenv("PAPER_MATCHER_DB_PATH", str(test_db_path))
     monkeypatch.setenv("PAPER_MATCHER_DB_BUCKET", "")
     monkeypatch.setenv("AWS_S3_BUCKET", "")
+    monkeypatch.setenv("AUTH_DISABLED", "true")
     
     # Reload core engine DB_PATH
     import core_engine as core
