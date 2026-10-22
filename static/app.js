@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     pastEvaluations: [],
     allPapers: [],
     selectedPaperIds: new Set(),
+    historyColumnSort: { key: null, dir: 'asc' },
     selectedEvalIds: new Set(),
     abortController: null,
 
@@ -437,7 +438,18 @@ document.addEventListener('DOMContentLoaded', () => {
       const historyFilterSource = document.getElementById('history-filter-source');
       const historySort = document.getElementById('history-sort');
 
+      const updateHistorySortIndicators = () => {
+        document.querySelectorAll('.history-sortable-th').forEach(th => {
+          const ind = th.querySelector('.history-sort-indicator');
+          if (!ind) return;
+          const active = this.historyColumnSort.key === th.dataset.sortKey;
+          ind.textContent = active ? (this.historyColumnSort.dir === 'asc' ? '▲' : '▼') : '↕';
+          ind.style.opacity = active ? '1' : '.35';
+        });
+      };
+
       const triggerTableReRender = () => {
+        updateHistorySortIndicators();
         if (typeof this.renderHistoryPapersTable === 'function') {
           this.renderHistoryPapersTable();
         }
@@ -484,9 +496,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
       updateDualSliderHighlight();
 
+      document.querySelectorAll('.history-sortable-th').forEach(th => {
+        th.addEventListener('click', () => {
+          const key = th.dataset.sortKey;
+          if (this.historyColumnSort.key === key) {
+            this.historyColumnSort.dir = this.historyColumnSort.dir === 'asc' ? 'desc' : 'asc';
+          } else {
+            this.historyColumnSort = { key, dir: 'asc' };
+          }
+          triggerTableReRender();
+        });
+      });
+      updateHistorySortIndicators();
+
       if (historySearch) historySearch.addEventListener('input', triggerTableReRender);
-      document.getElementById('history-filter-problem')?.addEventListener('change', triggerTableReRender);
-      document.getElementById('history-filter-title')?.addEventListener('change', triggerTableReRender);
       if (historyMinScore) {
         historyMinScore.addEventListener('input', handleScoreSliderChange);
         historyMinScore.addEventListener('change', handleScoreSliderChange);
@@ -1301,41 +1324,6 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // ── History List & Paper-Centric Table ──
-    populateHistoryFilterOptions() {
-      const fill = (selectId, values, allLabel, labelFor) => {
-        const select = document.getElementById(selectId);
-        if (!select) return;
-        const previous = select.value;
-        select.innerHTML = '';
-        const allOpt = document.createElement('option');
-        allOpt.value = '';
-        allOpt.textContent = allLabel;
-        select.appendChild(allOpt);
-        values.forEach(v => {
-          const opt = document.createElement('option');
-          opt.value = v;
-          opt.textContent = labelFor(v);
-          opt.title = v;
-          select.appendChild(opt);
-        });
-        select.value = values.includes(previous) ? previous : '';
-      };
-
-      const problems = [...new Set(
-        [...this.pastEvaluations, ...this.allPapers]
-          .map(x => (x.problem_text || '').trim())
-          .filter(Boolean)
-      )].sort((a, b) => a.localeCompare(b));
-      const titles = [...new Set(
-        this.allPapers.map(p => (p.title || '').trim()).filter(Boolean)
-      )].sort((a, b) => a.localeCompare(b));
-
-      fill('history-filter-problem', problems, 'All Research Problems',
-        v => (v.length > 90 ? v.slice(0, 87) + '...' : v));
-      fill('history-filter-title', titles, 'All Paper Titles',
-        v => (v.length > 90 ? v.slice(0, 87) + '...' : v));
-    },
-
     async loadHistory() {
       try {
         const [resEval, resPapers] = await Promise.all([
@@ -1348,7 +1336,6 @@ document.addEventListener('DOMContentLoaded', () => {
         this.pastEvaluations = dataEval.evaluations || [];
         this.allPapers = dataPapers.papers || [];
 
-        this.populateHistoryFilterOptions();
         this.selectedPaperIds.clear();
         this.updateBulkActionButtons();
 
@@ -1433,8 +1420,6 @@ document.addEventListener('DOMContentLoaded', () => {
       tbody.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
-      const problemVal = document.getElementById('history-filter-problem')?.value || '';
-      const titleVal = document.getElementById('history-filter-title')?.value || '';
       const sourceFilter = document.getElementById('history-filter-source')?.value || 'all';
       const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
       const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
@@ -1451,14 +1436,6 @@ document.addEventListener('DOMContentLoaded', () => {
         );
       }
 
-      if (problemVal) {
-        list = list.filter(p => (p.problem_text || '') === problemVal);
-      }
-
-      if (titleVal) {
-        list = list.filter(p => (p.title || '') === titleVal);
-      }
-
       if (sourceFilter === 'acl') {
         list = list.filter(p => (p.categories || '').includes('ACL'));
       } else if (sourceFilter === 'arxiv') {
@@ -1469,8 +1446,12 @@ document.addEventListener('DOMContentLoaded', () => {
         list = list.filter(p => (p.avg_score || 0) >= minScoreFilter && (p.avg_score || 0) <= maxScoreFilter);
       }
 
-      // Sorting
-      if (sortVal === 'score-desc') {
+      // Sorting: column header sort (title/problem) takes precedence over the dropdown
+      if (this.historyColumnSort.key) {
+        const dir = this.historyColumnSort.dir === 'asc' ? 1 : -1;
+        const field = this.historyColumnSort.key === 'title' ? 'title' : 'problem_text';
+        list.sort((a, b) => dir * String(a[field] || '').localeCompare(String(b[field] || '')));
+      } else if (sortVal === 'score-desc') {
         list.sort((a, b) => (b.avg_score || 0) - (a.avg_score || 0));
       } else if (sortVal === 'score-asc') {
         list.sort((a, b) => (a.avg_score || 0) - (b.avg_score || 0));
@@ -1850,7 +1831,6 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
-      const problemVal = document.getElementById('history-filter-problem')?.value || '';
       const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
       const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
 
@@ -1864,9 +1844,6 @@ document.addEventListener('DOMContentLoaded', () => {
         );
       }
 
-      if (problemVal) {
-        list = list.filter(ev => (ev.problem_text || '') === problemVal);
-      }
 
       if (minScoreFilter > 1 || maxScoreFilter < 10) {
         list = list.filter(ev => {

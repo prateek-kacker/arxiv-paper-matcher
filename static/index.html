@@ -419,12 +419,6 @@
             <!-- Filter & Search Toolbar (Shared across History Sub-Tabs) -->
             <div id="history-filter-toolbar" class="card elev-sm" style="flex-direction:row;gap:12px;align-items:center;flex-wrap:wrap">
               <input id="history-search" class="input" type="text" placeholder="Search by paper title, author, abstract or research problem..." style="flex:1;min-width:240px" />
-              <select id="history-filter-problem" class="input" style="flex:1;min-width:200px;max-width:320px">
-                <option value="">All Research Problems</option>
-              </select>
-              <select id="history-filter-title" class="input" style="flex:1;min-width:200px;max-width:320px">
-                <option value="">All Paper Titles</option>
-              </select>
               <select id="history-filter-source" class="input" style="width:160px">
                 <option value="all">All Sources</option>
                 <option value="arxiv">arXiv CS.CL</option>
@@ -497,9 +491,9 @@
                   <thead>
                     <tr style="background:var(--color-surface);border-bottom:2px solid var(--color-divider);text-align:left">
                       <th style="padding:10px;width:30px"></th>
-                      <th style="padding:10px">Paper Title &amp; Authors</th>
+                      <th class="history-sortable-th" data-sort-key="title" style="padding:10px;cursor:pointer;user-select:none" title="Sort by paper title">Paper Title &amp; Authors <span class="history-sort-indicator"></span></th>
                       <th style="padding:10px;width:130px">Score</th>
-                      <th style="padding:10px">Research Problem</th>
+                      <th class="history-sortable-th" data-sort-key="problem" style="padding:10px;cursor:pointer;user-select:none" title="Sort by research problem">Research Problem <span class="history-sort-indicator"></span></th>
                       <th style="padding:10px;width:120px">Date</th>
                       <th style="padding:10px;width:120px">Actions</th>
                     </tr>
