@@ -485,8 +485,8 @@ document.addEventListener('DOMContentLoaded', () => {
       updateDualSliderHighlight();
 
       if (historySearch) historySearch.addEventListener('input', triggerTableReRender);
-      document.getElementById('history-filter-problem')?.addEventListener('input', triggerTableReRender);
-      document.getElementById('history-filter-title')?.addEventListener('input', triggerTableReRender);
+      document.getElementById('history-filter-problem')?.addEventListener('change', triggerTableReRender);
+      document.getElementById('history-filter-title')?.addEventListener('change', triggerTableReRender);
       if (historyMinScore) {
         historyMinScore.addEventListener('input', handleScoreSliderChange);
         historyMinScore.addEventListener('change', handleScoreSliderChange);
@@ -1301,6 +1301,41 @@ document.addEventListener('DOMContentLoaded', () => {
     },
 
     // ── History List & Paper-Centric Table ──
+    populateHistoryFilterOptions() {
+      const fill = (selectId, values, allLabel, labelFor) => {
+        const select = document.getElementById(selectId);
+        if (!select) return;
+        const previous = select.value;
+        select.innerHTML = '';
+        const allOpt = document.createElement('option');
+        allOpt.value = '';
+        allOpt.textContent = allLabel;
+        select.appendChild(allOpt);
+        values.forEach(v => {
+          const opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = labelFor(v);
+          opt.title = v;
+          select.appendChild(opt);
+        });
+        select.value = values.includes(previous) ? previous : '';
+      };
+
+      const problems = [...new Set(
+        [...this.pastEvaluations, ...this.allPapers]
+          .map(x => (x.problem_text || '').trim())
+          .filter(Boolean)
+      )].sort((a, b) => a.localeCompare(b));
+      const titles = [...new Set(
+        this.allPapers.map(p => (p.title || '').trim()).filter(Boolean)
+      )].sort((a, b) => a.localeCompare(b));
+
+      fill('history-filter-problem', problems, 'All Research Problems',
+        v => (v.length > 90 ? v.slice(0, 87) + '...' : v));
+      fill('history-filter-title', titles, 'All Paper Titles',
+        v => (v.length > 90 ? v.slice(0, 87) + '...' : v));
+    },
+
     async loadHistory() {
       try {
         const [resEval, resPapers] = await Promise.all([
@@ -1313,6 +1348,7 @@ document.addEventListener('DOMContentLoaded', () => {
         this.pastEvaluations = dataEval.evaluations || [];
         this.allPapers = dataPapers.papers || [];
 
+        this.populateHistoryFilterOptions();
         this.selectedPaperIds.clear();
         this.updateBulkActionButtons();
 
@@ -1397,8 +1433,8 @@ document.addEventListener('DOMContentLoaded', () => {
       tbody.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
-      const problemVal = (document.getElementById('history-filter-problem')?.value || '').toLowerCase().trim();
-      const titleVal = (document.getElementById('history-filter-title')?.value || '').toLowerCase().trim();
+      const problemVal = document.getElementById('history-filter-problem')?.value || '';
+      const titleVal = document.getElementById('history-filter-title')?.value || '';
       const sourceFilter = document.getElementById('history-filter-source')?.value || 'all';
       const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
       const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
@@ -1416,11 +1452,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (problemVal) {
-        list = list.filter(p => (p.problem_text || '').toLowerCase().includes(problemVal));
+        list = list.filter(p => (p.problem_text || '') === problemVal);
       }
 
       if (titleVal) {
-        list = list.filter(p => (p.title || '').toLowerCase().includes(titleVal));
+        list = list.filter(p => (p.title || '') === titleVal);
       }
 
       if (sourceFilter === 'acl') {
@@ -1814,7 +1850,7 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
-      const problemVal = (document.getElementById('history-filter-problem')?.value || '').toLowerCase().trim();
+      const problemVal = document.getElementById('history-filter-problem')?.value || '';
       const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
       const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
 
@@ -1829,7 +1865,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
 
       if (problemVal) {
-        list = list.filter(ev => (ev.problem_text || '').toLowerCase().includes(problemVal));
+        list = list.filter(ev => (ev.problem_text || '') === problemVal);
       }
 
       if (minScoreFilter > 1 || maxScoreFilter < 10) {
