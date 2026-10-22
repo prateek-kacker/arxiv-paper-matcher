@@ -93,6 +93,29 @@ def test_google_login_rejects_unapproved_account(api_client, monkeypatch):
     assert api_client.get("/api/config").status_code == 401
 
 
+def test_login_page_hides_google_button_when_client_id_missing(api_client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.delenv("GOOGLE_CLIENT_ID", raising=False)
+
+    response = api_client.get("/login")
+
+    assert response.status_code == 200
+    assert "Google sign-in is not configured" in response.text
+    assert 'class="signin hidden"' in response.text
+    assert 'data-client_id=""' in response.text
+
+
+def test_login_page_shows_google_button_when_client_id_set(api_client, monkeypatch):
+    monkeypatch.setenv("AUTH_DISABLED", "false")
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")
+
+    response = api_client.get("/login")
+
+    assert response.status_code == 200
+    assert 'class="signin"' in response.text
+    assert 'data-client_id="test-client.apps.googleusercontent.com"' in response.text
+
+
 def test_logout_clears_authenticated_session(api_client, monkeypatch):
     monkeypatch.setenv("AUTH_DISABLED", "false")
     monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client.apps.googleusercontent.com")

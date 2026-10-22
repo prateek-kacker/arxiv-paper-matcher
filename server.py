@@ -107,6 +107,7 @@ def _login_page(error: str = "") -> HTMLResponse:
     client_id = os.environ.get("GOOGLE_CLIENT_ID", "").strip()
     page = login_path.read_text(encoding="utf-8")
     page = page.replace("__GOOGLE_CLIENT_ID__", html.escape(client_id, quote=True))
+    page = page.replace("__SIGNIN_CLASS__", "signin" if client_id else "signin hidden")
     page = page.replace("__AUTH_ERROR__", html.escape(error))
     page = page.replace("__ERROR_CLASS__", "" if error else "hidden")
     return HTMLResponse(page)
