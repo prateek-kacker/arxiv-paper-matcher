@@ -451,8 +451,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const maxInput = document.getElementById('history-filter-max-score');
         const highlight = document.getElementById('dual-range-highlight');
         if (minInput && maxInput && highlight) {
-          const minVal = parseInt(minInput.value);
-          const maxVal = parseInt(maxInput.value);
+          const minVal = parseFloat(minInput.value);
+          const maxVal = parseFloat(maxInput.value);
           const leftPercent = ((minVal - 1) / 9) * 100;
           const rightPercent = 100 - (((maxVal - 1) / 9) * 100);
           highlight.style.left = `${leftPercent}%`;
@@ -464,8 +464,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const minInput = document.getElementById('history-filter-min-score');
         const maxInput = document.getElementById('history-filter-max-score');
         if (minInput && maxInput) {
-          let minVal = parseInt(minInput.value);
-          let maxVal = parseInt(maxInput.value);
+          let minVal = parseFloat(minInput.value);
+          let maxVal = parseFloat(maxInput.value);
           if (minVal > maxVal) {
             if (e.target?.id === 'history-filter-min-score') {
               maxInput.value = minVal;
@@ -1396,8 +1396,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
       const sourceFilter = document.getElementById('history-filter-source')?.value || 'all';
-      const minScoreFilter = parseInt(document.getElementById('history-filter-min-score')?.value || '1');
-      const maxScoreFilter = parseInt(document.getElementById('history-filter-max-score')?.value || '10');
+      const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
+      const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
       const sortVal = document.getElementById('history-sort')?.value || 'score-desc';
 
       let list = [...this.allPapers];
@@ -1802,8 +1802,8 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
-      const minScoreFilter = parseInt(document.getElementById('history-filter-min-score')?.value || '1');
-      const maxScoreFilter = parseInt(document.getElementById('history-filter-max-score')?.value || '10');
+      const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
+      const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
 
       let list = [...this.pastEvaluations];
 
