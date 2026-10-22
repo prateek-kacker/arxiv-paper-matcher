@@ -485,6 +485,8 @@ document.addEventListener('DOMContentLoaded', () => {
       updateDualSliderHighlight();
 
       if (historySearch) historySearch.addEventListener('input', triggerTableReRender);
+      document.getElementById('history-filter-problem')?.addEventListener('input', triggerTableReRender);
+      document.getElementById('history-filter-title')?.addEventListener('input', triggerTableReRender);
       if (historyMinScore) {
         historyMinScore.addEventListener('input', handleScoreSliderChange);
         historyMinScore.addEventListener('change', handleScoreSliderChange);
@@ -1395,6 +1397,8 @@ document.addEventListener('DOMContentLoaded', () => {
       tbody.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
+      const problemVal = (document.getElementById('history-filter-problem')?.value || '').toLowerCase().trim();
+      const titleVal = (document.getElementById('history-filter-title')?.value || '').toLowerCase().trim();
       const sourceFilter = document.getElementById('history-filter-source')?.value || 'all';
       const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
       const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
@@ -1409,6 +1413,14 @@ document.addEventListener('DOMContentLoaded', () => {
           (p.abstract || '').toLowerCase().includes(searchVal) ||
           (p.problem_text || '').toLowerCase().includes(searchVal)
         );
+      }
+
+      if (problemVal) {
+        list = list.filter(p => (p.problem_text || '').toLowerCase().includes(problemVal));
+      }
+
+      if (titleVal) {
+        list = list.filter(p => (p.title || '').toLowerCase().includes(titleVal));
       }
 
       if (sourceFilter === 'acl') {
@@ -1802,6 +1814,7 @@ document.addEventListener('DOMContentLoaded', () => {
       container.innerHTML = '';
 
       const searchVal = (document.getElementById('history-search')?.value || '').toLowerCase().trim();
+      const problemVal = (document.getElementById('history-filter-problem')?.value || '').toLowerCase().trim();
       const minScoreFilter = parseFloat(document.getElementById('history-filter-min-score')?.value || '1');
       const maxScoreFilter = parseFloat(document.getElementById('history-filter-max-score')?.value || '10');
 
@@ -1813,6 +1826,10 @@ document.addEventListener('DOMContentLoaded', () => {
           (ev.model_name || '').toLowerCase().includes(searchVal) ||
           String(ev.id).includes(searchVal)
         );
+      }
+
+      if (problemVal) {
+        list = list.filter(ev => (ev.problem_text || '').toLowerCase().includes(problemVal));
       }
 
       if (minScoreFilter > 1 || maxScoreFilter < 10) {
